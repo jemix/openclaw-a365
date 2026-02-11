@@ -11,18 +11,30 @@ Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph AP
 - **Role-Based Access**: Distinguishes between Owner and Requester roles
 - **Enterprise-Ready**: Supports single-tenant authentication, allowlists, and DM policies
 
-## Quick Start (Docker)
+## Quick Start
 
-### 1. Prerequisites
+### Prerequisites
 
-- Docker and Docker Compose
+- Docker
 - [Microsoft Agent 365 registration](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/registration) with Agentic User identity
 - API key for at least one LLM provider (Anthropic, OpenAI, etc.)
+- Access to this repo (for pulling the private image)
 
-### 2. Configure
+### 1. Authenticate with GitHub Container Registry
 
 ```bash
-cp .env.example .env
+# Create a GitHub Personal Access Token with `read:packages` scope
+# Then login:
+echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+### 2. Create your config file
+
+Download the example and fill in your credentials:
+
+```bash
+curl -O https://raw.githubusercontent.com/SidU/openclaw-a365/main/.env.example
+mv .env.example .env
 # Edit .env with your credentials
 ```
 
@@ -42,12 +54,35 @@ Required environment variables:
 ### 3. Run
 
 ```bash
-docker-compose up -d
+docker run --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
+```
+
+Or run in background:
+
+```bash
+docker run -d --name openclaw-a365 --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
 ```
 
 ### 4. Configure A365
 
 Point your A365 agent to `https://your-host:3978/api/messages`
+
+---
+
+<details>
+<summary><b>Alternative: Build from source</b></summary>
+
+If you prefer to build locally instead of using the pre-built image:
+
+```bash
+git clone https://github.com/SidU/openclaw-a365.git
+cd openclaw-a365
+cp .env.example .env
+# Edit .env with your credentials
+docker-compose up -d
+```
+
+</details>
 
 ## Model Configuration
 
