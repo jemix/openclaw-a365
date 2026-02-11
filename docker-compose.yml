@@ -37,7 +37,7 @@ services:
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
 
       # ===========================================
-      # A365 Bot Framework Credentials (required)
+      # A365 Agentic Credentials (required)
       - A365_APP_ID=${A365_APP_ID}
       - A365_APP_PASSWORD=${A365_APP_PASSWORD}
       - A365_TENANT_ID=${A365_TENANT_ID}

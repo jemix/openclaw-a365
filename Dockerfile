@@ -67,7 +67,7 @@ RUN printf '%s\n' '#!/bin/sh' > /app/entrypoint.sh && \
     printf '%s\n' 'exec pnpm openclaw gateway' >> /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
 
-# Expose Bot Framework port
+# Expose A365 messaging port
 EXPOSE 3978
 
 # Health check

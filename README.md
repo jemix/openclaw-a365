@@ -4,7 +4,7 @@ Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph AP
 
 ## Features
 
-- **Native Bot Framework Integration**: Receives and sends messages through Microsoft 365 Agents
+- **Native A365 Integration**: Receives and sends messages through Microsoft 365 Agents
 - **Graph API Tools**: Built-in tools for calendar, email, and user operations
 - **Agentic Blueprint**: Uses T1/T2/User token flow for secure Graph API access on behalf of users
 - **Multi-Model Support**: Configure primary model and fallbacks (Anthropic, OpenAI, OpenRouter, Azure)
@@ -16,7 +16,7 @@ Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph AP
 ### 1. Prerequisites
 
 - Docker and Docker Compose
-- Azure Bot registration with Microsoft 365 Agents
+- Azure app registration for Microsoft 365 Agents
 - Autonomous Agent Instance ID (from M365 Agents registration)
 - API key for at least one LLM provider (Anthropic, OpenAI, etc.)
 
@@ -32,8 +32,8 @@ Required environment variables:
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (or use another provider) |
-| `A365_APP_ID` | Bot Framework App ID |
-| `A365_APP_PASSWORD` | Bot Framework App Password |
+| `A365_APP_ID` | Agentic App ID |
+| `A365_APP_PASSWORD` | Agentic App Password |
 | `A365_TENANT_ID` | Azure AD Tenant ID |
 | `AA_INSTANCE_ID` | Autonomous Agent Instance ID |
 | `AGENT_IDENTITY` | Agent UPN (e.g., `agent@contoso.com`) |
@@ -82,8 +82,8 @@ The A365 channel uses **Federated Identity Credentials (FIC)** via the Agentic B
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
-The Bot Framework credentials (`A365_APP_ID`, `A365_APP_PASSWORD`) are used for both:
-1. Bot Framework message authentication
+The Agentic credentials (`A365_APP_ID`, `A365_APP_PASSWORD`) are used for both:
+1. A365 message authentication
 2. Graph API token acquisition (T1/T2 flow)
 
 ## Graph API Tools
@@ -106,8 +106,8 @@ The following tools are available to the LLM when Graph API is configured:
 
 | Variable | Description |
 |----------|-------------|
-| `A365_APP_ID` | Bot Framework App ID |
-| `A365_APP_PASSWORD` | Bot Framework App Password |
+| `A365_APP_ID` | Agentic App ID |
+| `A365_APP_PASSWORD` | Agentic App Password |
 | `A365_TENANT_ID` | Azure AD Tenant ID |
 | `AA_INSTANCE_ID` | Autonomous Agent Instance ID (for FIC) |
 | `AGENT_IDENTITY` | Agent service account UPN |
