@@ -133,14 +133,28 @@ NETWORK_MODE=allowlist
 NETWORK_ALLOWLIST=api.weather.gov,api.github.com,your-api.internal.com
 ```
 
+### Essential Domains
+
+In `restricted` and `allowlist` modes, these domains are always allowed:
+
+| Domain | Purpose |
+|--------|---------|
+| `login.microsoftonline.com` | Azure AD authentication |
+| `graph.microsoft.com` | Microsoft Graph API (calendar, email) |
+| `smba.trafficmanager.net` | Bot Framework message delivery |
+| `*.botframework.com` | Bot Framework services |
+| Your LLM provider | Auto-detected from API keys (Anthropic, OpenAI, etc.) |
+
 ### How It Works
 
-Network policy is enforced via `iptables` at the container level, which catches all outbound traffic including shell commands. At container startup:
+Network policy is enforced via `iptables` at the container level, which catches **all** outbound traffic - including shell commands, curl, wget, or any code the LLM might execute. At container startup:
 
-1. Essential domains are resolved to IP addresses (Microsoft auth, Graph, your LLM provider)
+1. Essential domains are resolved to IP addresses
 2. If using `allowlist` mode, your custom domains are also resolved
 3. iptables rules are applied to allow only those IPs
 4. All other outbound traffic is dropped
+
+> **Future**: Dynamic approval flow where the agent can request access to new domains and the owner can approve/deny via Teams notification (Phase 2).
 
 ### Running with Network Policy
 
