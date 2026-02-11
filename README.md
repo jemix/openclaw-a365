@@ -16,8 +16,7 @@ Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph AP
 ### 1. Prerequisites
 
 - Docker and Docker Compose
-- Azure app registration for Microsoft 365 Agents
-- Autonomous Agent Instance ID (from M365 Agents registration)
+- [Microsoft Agent 365 registration](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/registration) with Agentic User identity
 - API key for at least one LLM provider (Anthropic, OpenAI, etc.)
 
 ### 2. Configure
@@ -70,7 +69,9 @@ Supported providers:
 
 ## Agentic Identity Model
 
-A key design principle of A365 agents is that **agents have their own user identity** in the tenant (e.g., `agent@contoso.com`). This is fundamentally different from traditional "on behalf of user" OAuth flows.
+> **Learn more**: [Microsoft Agent 365 Identity Documentation](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/identity)
+
+A key design principle of A365 agents is that **agents have their own user identity** in the tenant (e.g., `agent@contoso.com`). This is fundamentally different from traditional "on behalf of user" OAuth flows. Microsoft calls this an "Agentic User" - a specialized identity that functions as a full member of your Microsoft 365 organization.
 
 ### Why Agentic Identity?
 
