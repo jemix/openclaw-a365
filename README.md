@@ -6,7 +6,7 @@ Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph AP
 
 - **Native A365 Integration**: Receives and sends messages through Microsoft 365 Agents
 - **Graph API Tools**: Built-in tools for calendar, email, and user operations
-- **Agentic Blueprint**: Uses T1/T2/User token flow for secure Graph API access on behalf of users
+- **Agentic Identity**: Agent has its own user account in the tenant for explicit, auditable access
 - **Multi-Model Support**: Configure primary model and fallbacks (Anthropic, OpenAI, OpenRouter, Azure)
 - **Role-Based Access**: Distinguishes between Owner and Requester roles
 - **Enterprise-Ready**: Supports single-tenant authentication, allowlists, and DM policies
@@ -68,23 +68,48 @@ Supported providers:
 - **OpenRouter**: `openrouter/anthropic/claude-3.5-sonnet`, etc.
 - **Azure OpenAI**: `azure/gpt-4o` (requires `AZURE_OPENAI_*` config)
 
+## Agentic Identity Model
+
+A key design principle of A365 agents is that **agents have their own user identity** in the tenant (e.g., `agent@contoso.com`). This is fundamentally different from traditional "on behalf of user" OAuth flows.
+
+### Why Agentic Identity?
+
+| Traditional Delegated Access | Agentic Identity |
+|------------------------------|------------------|
+| Agent acts *as* the user | Agent acts *as itself* |
+| Access to everything user can access | Access only to explicitly shared resources |
+| User must be online to refresh tokens | Agent operates autonomously 24/7 |
+| Audit logs show "user did X via app" | Audit logs show "agent@contoso.com did X" |
+
+### Benefits for Autonomous Agents
+
+- **Explicit Consent**: Users share specific resources with the agent (e.g., "share my calendar with agent@contoso.com") just like sharing with a colleague
+- **Least Privilege**: Agent only sees what's been explicitly shared, not the user's entire mailbox/files
+- **Auditability**: All actions are clearly attributed to the agent's identity in compliance logs
+- **Familiar UX**: Uses the same sharing model humans already understand
+- **Trust Boundaries**: Clear separation between what the agent can access vs. full user access
+
+This model treats the agent as a trusted assistant with its own identity, rather than a service wearing the user's credentials.
+
 ## Authentication
 
-The A365 channel uses **Federated Identity Credentials (FIC)** via the Agentic Blueprint to authenticate with Microsoft Graph API on behalf of users.
+The A365 channel uses **Federated Identity Credentials (FIC)** via the Agentic Blueprint to authenticate as the agent's identity.
 
-### T1/T2/User Token Flow
+### T1/T2/Agent Token Flow
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   T1 Token      │────▶│   T2 Token      │────▶│  User Token     │
-│ (client_creds   │     │ (jwt-bearer     │     │ (user_fic       │
-│  + fmi_path)    │     │  assertion)     │     │  grant_type)    │
+│   T1 Token      │────▶│   T2 Token      │────▶│  Agent Token    │
+│ (client_creds   │     │ (jwt-bearer     │     │ (user_fic for   │
+│  + fmi_path)    │     │  assertion)     │     │  agent identity)│
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
+The agent authenticates using its own identity (`AGENT_IDENTITY`), then accesses resources that have been shared with it (e.g., the owner's calendar).
+
 The Agentic credentials (`A365_APP_ID`, `A365_APP_PASSWORD`) are used for both:
 1. A365 message authentication
-2. Graph API token acquisition (T1/T2 flow)
+2. Graph API token acquisition (T1/T2 flow for agent identity)
 
 ## Graph API Tools
 
@@ -139,9 +164,21 @@ The following tools are available to the LLM when Graph API is configured:
 
 | Property | Description |
 |----------|-------------|
-| `OWNER` | Email of the person this agent supports (the "principal") |
+| `AGENT_IDENTITY` | The agent's own user account in the tenant (e.g., `agent@contoso.com`). This is a real Entra ID user that resources are shared with. |
+| `OWNER` | Email of the person this agent supports (the "principal"). The owner should share their calendar/resources with `AGENT_IDENTITY`. |
 | `OWNER_AAD_ID` | AAD Object ID of the owner (for role detection) |
-| `AGENT_IDENTITY` | Service account email used for Graph API calls |
+
+### Setup: Sharing Resources with the Agent
+
+For the agent to access the owner's calendar, the owner must share it:
+
+1. In Outlook, go to Calendar → Share Calendar
+2. Add `agent@contoso.com` (the `AGENT_IDENTITY`)
+3. Grant appropriate permissions (e.g., "Can view all details" or "Can edit")
+
+This explicit sharing model ensures the agent only accesses what the owner has consciously granted.
+
+### User Roles
 
 When the owner interacts with the agent, they get `UserRole: Owner`. Others get `UserRole: Requester`.
 
@@ -157,8 +194,8 @@ When the owner interacts with the agent, they get `UserRole: Owner`. Others get 
         │                                     │    └───────────────┘    │
         ▼                                     └─────────────────────────┘
    ┌─────────┐
-   │ Graph   │  ◄── T1/T2/User Token Flow (Agentic Blueprint)
-   │ API     │
+   │ Graph   │  ◄── Agent authenticates as its own identity
+   │ API     │      (accesses resources shared with it)
    └─────────┘
 ```
 
