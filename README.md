@@ -67,13 +67,11 @@ Supported providers:
 - **OpenRouter**: `openrouter/anthropic/claude-3.5-sonnet`, etc.
 - **Azure OpenAI**: `azure/gpt-4o` (requires `AZURE_OPENAI_*` config)
 
-## Agentic Identity Model
+## Why Agentic Identity?
 
 > **Learn more**: [Microsoft Agent 365 Identity Documentation](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/identity)
 
 A key design principle of A365 agents is that **agents have their own user identity** in the tenant (e.g., `agent@contoso.com`). This is fundamentally different from traditional "on behalf of user" OAuth flows. Microsoft calls this an "Agentic User" - a specialized identity that functions as a full member of your Microsoft 365 organization.
-
-### Why Agentic Identity?
 
 | Traditional Delegated Access | Agentic Identity |
 |------------------------------|------------------|
@@ -82,7 +80,7 @@ A key design principle of A365 agents is that **agents have their own user ident
 | User must be online to refresh tokens | Agent operates autonomously 24/7 |
 | Audit logs show "user did X via app" | Audit logs show "agent@contoso.com did X" |
 
-### Benefits for Autonomous Agents
+### Key Benefits
 
 - **Explicit Consent**: Users share specific resources with the agent (e.g., "share my calendar with agent@contoso.com") just like sharing with a colleague
 - **Least Privilege**: Agent only sees what's been explicitly shared, not the user's entire mailbox/files
