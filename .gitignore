@@ -24,3 +24,6 @@ dist/
 
 # Docker data volumes
 data/
+
+# Internal docs (SDK bug reports, etc.)
+docs/sdk-bug-*.md

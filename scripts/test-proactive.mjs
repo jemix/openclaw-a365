@@ -13,11 +13,11 @@ const BLUEPRINT_CLIENT_APP_ID = process.env.BLUEPRINT_CLIENT_APP_ID || APP_ID;
 const BLUEPRINT_CLIENT_SECRET = process.env.BLUEPRINT_CLIENT_SECRET || APP_SECRET;
 
 console.log("=== Config ===");
-console.log("APP_ID:", APP_ID);
-console.log("TENANT_ID:", TENANT_ID);
-console.log("AA_INSTANCE_ID:", AA_INSTANCE_ID);
-console.log("AGENT_IDENTITY:", AGENT_IDENTITY);
-console.log("BLUEPRINT_CLIENT_APP_ID:", BLUEPRINT_CLIENT_APP_ID);
+console.log("APP_ID:", APP_ID ? "(set)" : "(missing)");
+console.log("TENANT_ID:", TENANT_ID ? "(set)" : "(missing)");
+console.log("AA_INSTANCE_ID:", AA_INSTANCE_ID ? "(set)" : "(missing)");
+console.log("AGENT_IDENTITY:", AGENT_IDENTITY ? "(set)" : "(missing)");
+console.log("BLUEPRINT_CLIENT_APP_ID:", BLUEPRINT_CLIENT_APP_ID ? "(set)" : "(missing)");
 
 if (!APP_ID || !APP_SECRET || !TENANT_ID || !AA_INSTANCE_ID || !AGENT_IDENTITY) {
   console.error("Missing required env vars");
