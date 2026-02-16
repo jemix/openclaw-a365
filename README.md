@@ -6,7 +6,7 @@ Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph AP
 
 ## Demo
 
-[![OpenClaw A365 Demo](https://img.youtube.com/vi/VH9f4Lwyw34/maxresdefault.jpg)](https://youtu.be/VH9f4Lwyw34)
+[![OpenClaw A365 Demo](https://img.youtube.com/vi/7uD2vyfBUUs/maxresdefault.jpg)](https://youtu.be/7uD2vyfBUUs)
 
 ## Features
 
