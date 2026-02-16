@@ -1,6 +1,8 @@
-# OpenClaw A365 Channel
+# OpenClaw A365 Channel (alpha)
 
 Native Microsoft 365 Agents (A365) channel for OpenClaw with integrated Graph API tools.
+
+> **Alpha**: This project is under active development. APIs and configuration may change between releases.
 
 ## Features
 
