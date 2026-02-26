@@ -475,7 +475,7 @@ async function updateCalendarEvent(
     if (!emailsCheck.ok) return { isError: true, content: [{ type: "text", text: emailsCheck.error }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${encodeURIComponent(eventId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${eventId}`;
 
   const eventBody: Partial<GraphCalendarEvent> = {};
 
@@ -542,7 +542,7 @@ async function deleteCalendarEvent(
 ): Promise<ToolResult> {
   const { userId, eventId } = params;
 
-  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${encodeURIComponent(eventId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${eventId}`;
 
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
@@ -795,7 +795,7 @@ async function getEmails(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const clampedTop = Math.min(Math.max(top, 1), 50);
-  let path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
+  let path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
 
   if (orderBy) {
     path += `&$orderby=${encodeURIComponent(orderBy)}`;
@@ -846,7 +846,7 @@ async function readEmail(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
 
   const result = await graphRequest<GraphMailMessage>(cfg, "GET", path);
 
@@ -937,7 +937,7 @@ async function moveEmail(
     return { isError: true, content: [{ type: "text", text: "destinationFolderId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/move`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}/move`;
   const result = await graphRequest<GraphMailMessage>(cfg, "POST", path, { destinationId: destinationFolderId });
 
   if (!result.ok) {
@@ -965,7 +965,7 @@ async function deleteEmail(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}`;
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
   if (!result.ok) {
@@ -993,7 +993,7 @@ async function markEmailRead(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}`;
   const result = await graphRequest<GraphMailMessage>(cfg, "PATCH", path, { isRead });
 
   if (!result.ok) {
@@ -1018,7 +1018,7 @@ async function getMailFolders(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(parentFolderId)}/childFolders`
+    ? `/users/${encodeURIComponent(userId)}/mailFolders/${parentFolderId}/childFolders`
     : `/users/${encodeURIComponent(userId)}/mailFolders`;
   const path = `${basePath}?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,totalItemCount,childFolderCount&includeHiddenFolders=true`;
   const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
@@ -1051,7 +1051,7 @@ async function createMailFolder(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(parentFolderId)}/childFolders`
+    ? `/users/${encodeURIComponent(userId)}/mailFolders/${parentFolderId}/childFolders`
     : `/users/${encodeURIComponent(userId)}/mailFolders`;
 
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", basePath, { displayName });
@@ -1074,7 +1074,7 @@ async function renameMailFolder(
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}`;
   const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName });
 
   if (!result.ok) {
@@ -1095,7 +1095,7 @@ async function deleteMailFolder(
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
