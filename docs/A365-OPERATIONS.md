@@ -250,22 +250,25 @@ Power Platform API (8578e004-...):
 
 ### How to Modify Graph Scopes
 
-The `a365` CLI does NOT manage Graph scopes directly. They must be modified via the Graph API beta endpoint:
+Adding new Graph scopes requires **TWO steps** - both are mandatory:
 
-```
-POST /applications/{blueprintId}/microsoft.graph.agentIdentityBlueprint/inheritablePermissions
-```
+1. **Inheritable Permissions** (Blueprint level) - defines what CAN be inherited by agent instances
+2. **OAuth2 Permission Grant** (Service Principal level) - the actual admin consent that puts scopes into the token
 
-**Important:** The `az rest` CLI cannot perform write operations on this endpoint because it includes `Directory.AccessAsUser.All` in its token, which Agent APIs block. Use **Microsoft Graph PowerShell** instead:
+Without step 1, new instances can't inherit the scope. Without step 2, the scope doesn't appear in the token.
+
+#### Step 1: Update Inheritable Permissions (PowerShell required)
+
+The `az rest` CLI cannot perform write operations on this endpoint because it includes `Directory.AccessAsUser.All` in its token, which Agent APIs block. Use **Microsoft Graph PowerShell** instead:
 
 ```powershell
 pwsh -Command '
 Connect-MgGraph -Scopes "AgentIdentityBlueprint.ReadWrite.All" -NoWelcome
 
-# 1. Delete existing Graph permission entry
+# 1. Delete existing Graph permission entry (no PATCH support)
 Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/beta/applications/8a09c46a-cd7b-4147-8482-80de28dd72fe/microsoft.graph.agentIdentityBlueprint/inheritablePermissions/00000003-0000-0000-c000-000000000000"
 
-# 2. Recreate with updated scopes (include ALL scopes, old + new)
+# 2. Recreate with ALL scopes (old + new)
 $body = @{
   resourceAppId = "00000003-0000-0000-c000-000000000000"
   inheritableScopes = @{
@@ -286,14 +289,36 @@ Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/applic
 '
 ```
 
-**Why DELETE + POST?** The Graph API does not support PATCH for inheritable permissions. You must delete the existing entry and recreate it with all scopes (old + new).
+#### Step 2: Update OAuth2 Permission Grant (az rest works)
+
+Find the Graph grant ID first, then PATCH it:
+
+```bash
+# Find the grant ID for Microsoft Graph (resourceId starting with 3eca18e4)
+az rest --method GET --url "https://graph.microsoft.com/v1.0/servicePrincipals/d4dacd17-33fd-4a84-af6d-4fdae0590dd2/oauth2PermissionGrants"
+
+# PATCH the grant with all scopes (old + new, space-separated)
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/<GRANT_ID>" \
+  --body '{"scope": "Mail.ReadWrite Mail.Send Mail.ReadWrite.Shared Mail.Send.Shared Chat.ReadWrite User.Read.All Sites.Read.All"}'
+```
+
+Current grant ID: `F83a1P0zhEqvbU_a4FkN0uQYyj7u4UFLnYkFzBM73qQ`
+
+#### After both steps: Restart Gateway
+
+The token is cached in-memory. A gateway restart forces a new token acquisition with the updated scopes. Verify with the `Token claims:` log line that the new scopes appear in `scp`.
 
 ### Verifying Permissions
 
 Read-only verification works with `az rest` (no PowerShell needed):
 
 ```bash
+# Check inheritable permissions (Blueprint level)
 az rest --method GET --url "https://graph.microsoft.com/beta/applications/8a09c46a-cd7b-4147-8482-80de28dd72fe/microsoft.graph.agentIdentityBlueprint/inheritablePermissions"
+
+# Check OAuth2 grants (Service Principal level) - what actually lands in the token
+az rest --method GET --url "https://graph.microsoft.com/v1.0/servicePrincipals/d4dacd17-33fd-4a84-af6d-4fdae0590dd2/oauth2PermissionGrants"
 ```
 
 ### Blocked Scopes
