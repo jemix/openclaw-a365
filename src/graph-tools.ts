@@ -1111,12 +1111,23 @@ async function moveMailFolder(
   cfg: A365Config | undefined,
   params: { userId: string; folderId: string; destinationId: string },
 ): Promise<ToolResult> {
+  const log = getLogger();
   const { userId, folderId, destinationId } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}/move`;
+  if (!folderId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "folderId is required (use the folder ID from get_mail_folders, not the display name)" }] };
+  }
+  if (!destinationId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
+  }
+
+  log.debug("moveMailFolder", { folderId, destinationId });
+
+  // Don't encode folder IDs - they are base64url strings that Graph API expects raw
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}/move`;
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
 
   if (!result.ok) {
