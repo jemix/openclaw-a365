@@ -461,12 +461,19 @@ async function updateCalendarEvent(
     startDateTime?: string;
     endDateTime?: string;
     timeZone?: string;
+    attendees?: string[];
     location?: string;
     body?: string;
+    isOnlineMeeting?: boolean;
   },
 ): Promise<ToolResult> {
   const defaultTz = getDefaultTimezone(cfg);
-  const { userId, eventId, subject, startDateTime, endDateTime, timeZone, location, body } = params;
+  const { userId, eventId, subject, startDateTime, endDateTime, timeZone, attendees, location, body, isOnlineMeeting } = params;
+
+  if (attendees && attendees.length > 0) {
+    const emailsCheck = validateEmails(attendees, "attendees");
+    if (!emailsCheck.ok) return { isError: true, content: [{ type: "text", text: emailsCheck.error }] };
+  }
 
   const path = `/users/${encodeURIComponent(userId)}/calendar/events/${encodeURIComponent(eventId)}`;
 
@@ -481,11 +488,20 @@ async function updateCalendarEvent(
   if (endDateTime !== undefined) {
     eventBody.end = { dateTime: endDateTime, timeZone: timeZone || defaultTz };
   }
+  if (attendees !== undefined) {
+    eventBody.attendees = attendees.map((email) => ({
+      emailAddress: { address: email },
+      type: "required",
+    }));
+  }
   if (location !== undefined) {
     eventBody.location = { displayName: location };
   }
   if (body !== undefined) {
     eventBody.body = { contentType: "text", content: body };
+  }
+  if (isOnlineMeeting !== undefined) {
+    eventBody.isOnlineMeeting = isOnlineMeeting;
   }
 
   const result = await graphRequest<GraphCalendarEvent>(cfg, "PATCH", path, eventBody);
@@ -1174,7 +1190,7 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
     {
       name: "update_calendar_event",
       label: "Update Calendar Event",
-      description: "Update an existing calendar event.",
+      description: "Update an existing calendar event. Can change subject, time, attendees, location, body, and Teams meeting status.",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID whose calendar contains the event" }),
         eventId: Type.String({ description: "ID of the event to update" }),
@@ -1184,8 +1200,14 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
         ),
         endDateTime: Type.Optional(Type.String({ description: "New end date/time in ISO format" })),
         timeZone: Type.Optional(Type.String({ description: "Time zone for the new times" })),
+        attendees: Type.Optional(
+          Type.Array(Type.String(), { description: "Updated list of attendee email addresses (replaces existing attendees)" }),
+        ),
         location: Type.Optional(Type.String({ description: "New meeting location" })),
         body: Type.Optional(Type.String({ description: "New event body/description" })),
+        isOnlineMeeting: Type.Optional(
+          Type.Boolean({ description: "Set to true to make it a Teams meeting" }),
+        ),
       }),
       execute: async (_toolCallId, params) =>
         updateCalendarEvent(cfg, params as Parameters<typeof updateCalendarEvent>[1]),
