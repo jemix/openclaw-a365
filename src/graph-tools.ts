@@ -1123,7 +1123,7 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
     {
       name: "create_calendar_event",
       label: "Create Calendar Event",
-      description: `Create a new calendar event. ${owner ? `Default calendar owner: ${owner}` : "Requires userId parameter."}`,
+      description: `Create a new calendar event with optional attendees, location, and Teams meeting link. Use the attendees parameter to invite people. ${owner ? `Default calendar owner: ${owner}` : "Requires userId parameter."}`,
       parameters: Type.Object({
         userId: Type.String({
           description: "User email or ID whose calendar to create event on",
