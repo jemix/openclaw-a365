@@ -1091,6 +1091,27 @@ async function deleteMailFolder(
   };
 }
 
+async function moveMailFolder(
+  cfg: A365Config | undefined,
+  params: { userId: string; folderId: string; destinationId: string },
+): Promise<ToolResult> {
+  const { userId, folderId, destinationId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}/move`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: destinationId }, null, 2) }],
+  };
+}
+
 /**
  * Create the Graph API tools for the A365 channel.
  *
@@ -1340,6 +1361,17 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
         folderId: Type.String({ description: "ID of the folder to delete" }),
       }),
       execute: async (_toolCallId, params) => deleteMailFolder(cfg, params as Parameters<typeof deleteMailFolder>[1]),
+    },
+    {
+      name: "move_mail_folder",
+      label: "Move Mail Folder",
+      description: "Move a mail folder to a new parent folder. Use to reorganize folder hierarchy (e.g., move folder under _Legacy).",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID who owns the folder" }),
+        folderId: Type.String({ description: "ID of the folder to move" }),
+        destinationId: Type.String({ description: "ID of the destination parent folder" }),
+      }),
+      execute: async (_toolCallId, params) => moveMailFolder(cfg, params as Parameters<typeof moveMailFolder>[1]),
     },
   ];
 
