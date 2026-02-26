@@ -1021,6 +1021,72 @@ async function getMailFolders(
   };
 }
 
+async function createMailFolder(
+  cfg: A365Config | undefined,
+  params: { userId: string; displayName: string; parentFolderId?: string },
+): Promise<ToolResult> {
+  const { userId, displayName, parentFolderId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  const basePath = parentFolderId
+    ? `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(parentFolderId)}/childFolders`
+    : `/users/${encodeURIComponent(userId)}/mailFolders`;
+
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", basePath, { displayName });
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ created: true, id: result.data.id, displayName: result.data.displayName }, null, 2) }],
+  };
+}
+
+async function renameMailFolder(
+  cfg: A365Config | undefined,
+  params: { userId: string; folderId: string; displayName: string },
+): Promise<ToolResult> {
+  const { userId, folderId, displayName } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName });
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ renamed: true, id: result.data.id, displayName: result.data.displayName }, null, 2) }],
+  };
+}
+
+async function deleteMailFolder(
+  cfg: A365Config | undefined,
+  params: { userId: string; folderId: string },
+): Promise<ToolResult> {
+  const { userId, folderId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}`;
+  const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ deleted: true, folderId }, null, 2) }],
+  };
+}
+
 /**
  * Create the Graph API tools for the A365 channel.
  *
@@ -1237,6 +1303,38 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
         userId: Type.String({ description: "User email or ID whose mail folders to list" }),
       }),
       execute: async (_toolCallId, params) => getMailFolders(cfg, params as Parameters<typeof getMailFolders>[1]),
+    },
+    {
+      name: "create_mail_folder",
+      label: "Create Mail Folder",
+      description: "Create a new mail folder in a user's mailbox. Can create top-level folders or subfolders.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox to create the folder in" }),
+        displayName: Type.String({ description: "Name for the new folder" }),
+        parentFolderId: Type.Optional(Type.String({ description: "Parent folder ID to create a subfolder in. Omit for top-level folder." })),
+      }),
+      execute: async (_toolCallId, params) => createMailFolder(cfg, params as Parameters<typeof createMailFolder>[1]),
+    },
+    {
+      name: "rename_mail_folder",
+      label: "Rename Mail Folder",
+      description: "Rename an existing mail folder.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID who owns the folder" }),
+        folderId: Type.String({ description: "ID of the folder to rename" }),
+        displayName: Type.String({ description: "New name for the folder" }),
+      }),
+      execute: async (_toolCallId, params) => renameMailFolder(cfg, params as Parameters<typeof renameMailFolder>[1]),
+    },
+    {
+      name: "delete_mail_folder",
+      label: "Delete Mail Folder",
+      description: "Delete a mail folder and all its contents. Use with caution.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID who owns the folder" }),
+        folderId: Type.String({ description: "ID of the folder to delete" }),
+      }),
+      execute: async (_toolCallId, params) => deleteMailFolder(cfg, params as Parameters<typeof deleteMailFolder>[1]),
     },
   ];
 
