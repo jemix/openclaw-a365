@@ -143,12 +143,18 @@ async function graphRequest<T>(
       return { ok: false, error: errorMessage, status: response.status };
     }
 
-    // Handle 204 No Content
-    if (response.status === 204) {
+    // Handle empty-body success responses (202 Accepted, 204 No Content)
+    // Graph API returns 202 for async operations like sendMail, 204 for DELETE
+    if (response.status === 202 || response.status === 204) {
       return { ok: true, data: {} as T };
     }
 
-    const data = await response.json() as T;
+    const text = await response.text();
+    if (!text) {
+      return { ok: true, data: {} as T };
+    }
+
+    const data = JSON.parse(text) as T;
     return { ok: true, data };
   } catch (err) {
     log.error("Graph API network error", { error: String(err) });
