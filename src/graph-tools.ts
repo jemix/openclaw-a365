@@ -12,15 +12,14 @@ const DEFAULT_TIMEZONE = "UTC";
  * Encode a Graph API object ID for use in URL path segments.
  *
  * Graph IDs (AAMk..., AQMk...) are base64-encoded and may contain:
- * - `/` which breaks URL path structure → must be encoded to %2F
- * - `+` which is safe in URL paths → left as-is
- * - `=` which is safe in URL paths → left as-is (encodeURIComponent would break this)
- *
- * Note: encodeURIComponent encodes `=` to `%3D` which Graph API rejects ("Id is malformed").
- * We only encode `/` which is the sole character that breaks REST path routing.
+ * - `/` which breaks URL path structure → encode to %2F
+ * - `+` which some servers interpret as space → encode to %2B
+ * - `#` which starts a URL fragment → encode to %23
+ * - `?` which starts a query string → encode to %3F
+ * - `=` which is safe in URL paths → left as-is (encodeURIComponent encodes to %3D which Graph rejects)
  */
 function safeGraphId(id: string): string {
-  return id.replace(/\//g, "%2F");
+  return id.replace(/[/+#?]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 }
 
 /**
@@ -1110,11 +1109,18 @@ async function deleteMailFolder(
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(folderId)}`;
+  if (!folderId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "folderId is required" }] };
+  }
+
+  const encodedId = safeGraphId(folderId);
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodedId}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    // Include diagnostic info for debugging "Id is malformed" errors
+    const diag = `[v3-safeGraphId | idLen=${folderId.length} | raw="${folderId.substring(0, 30)}…" | encoded="${encodedId.substring(0, 30)}…"]`;
+    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
   return {
@@ -1138,11 +1144,14 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(folderId)}/move`;
+  const encodedFolderId = safeGraphId(folderId);
+  const encodedDestId = safeGraphId(destinationId);
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodedFolderId}/move`;
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    const diag = `[v3-safeGraphId | folderIdLen=${folderId.length} | raw="${folderId.substring(0, 30)}…" | encoded="${encodedFolderId.substring(0, 30)}…" | destIdLen=${destinationId.length}]`;
+    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
   return {
