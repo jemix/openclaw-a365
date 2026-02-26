@@ -132,13 +132,14 @@ export async function getGraphToken(
   const effectiveScope = scope || cfg?.graph?.scope || "https://graph.microsoft.com/.default";
   const cacheKey = `${username}|${effectiveScope}`;
 
-  log.debug("getGraphToken called", { username, scope: effectiveScope });
   const cached = tokenCache.get(cacheKey);
 
   // Return cached token if still valid (with 5 minute buffer)
   if (cached && cached.expiresAt > Date.now() + 5 * 60 * 1000) {
     return cached.accessToken;
   }
+
+  log.debug("getGraphToken: cache miss, acquiring new token", { username, scope: effectiveScope });
 
   // Try external callback first (if configured)
   const callbackConfig = resolveTokenCallbackConfig(cfg);
