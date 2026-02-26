@@ -6,6 +6,9 @@ import { resolveA365Credentials } from "./token.js";
 import { saveConversationReference } from "./conversation-store.js";
 import { setAdapter, setBlueprintClientId } from "./adapter-store.js";
 
+/** Guard against double-start: tracks whether the a365 server is already listening. */
+let a365ServerActive = false;
+
 export type MonitorA365Opts = {
   cfg: OpenClawConfig;
   runtime?: RuntimeEnv;
@@ -408,9 +411,28 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
   // Start the server using the Agents SDK
   const { startServer } = await import("@microsoft/agents-hosting-express");
 
+  // Guard: prevent double-start when health monitor calls us again
+  // while the previous server is still listening on the port.
+  if (a365ServerActive) {
+    log.warn(`a365 server already active on port ${port}, skipping duplicate start`);
+    // Block instead of returning - if we return, the health monitor interprets
+    // it as "provider stopped" and schedules yet another restart attempt.
+    await new Promise<void>((resolve) => {
+      if (opts.abortSignal) {
+        opts.abortSignal.addEventListener("abort", () => resolve());
+      }
+      // If no abort signal, block forever (process exit will clean up)
+    });
+    return { app: agentApp, shutdown: async () => {} };
+  }
+  a365ServerActive = true;
+
   // startServer returns a promise that resolves when server is ready
   // It uses PORT env var for the port
-  const serverPromise = startServer(agentApp);
+  // IMPORTANT: We must await this so OpenClaw's health monitor knows the provider
+  // is still running. Without await, the function returns immediately and the
+  // health monitor restarts the provider, causing EADDRINUSE.
+  await startServer(agentApp);
 
   log.info(`a365 provider started on port ${port}`);
 

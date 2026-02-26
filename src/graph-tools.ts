@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Type, type TSchema } from "@sinclair/typebox";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { A365Config, GraphCalendarEvent } from "./types.js";
+import type { A365Config, GraphCalendarEvent, GraphMailMessage, GraphMailFolder } from "./types.js";
 import { getGraphToken } from "./token.js";
 import { getA365Runtime } from "./runtime.js";
 
@@ -761,6 +761,261 @@ async function findMeetingTimes(
 }
 
 /**
+ * Get emails from a user's mailbox or specific folder.
+ */
+async function getEmails(
+  cfg: A365Config | undefined,
+  params: { userId: string; folderId?: string; top?: number; filter?: string; orderBy?: string },
+): Promise<ToolResult> {
+  const { userId, folderId = "inbox", top = 10, filter, orderBy } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  const clampedTop = Math.min(Math.max(top, 1), 50);
+  let path = `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
+
+  if (orderBy) {
+    path += `&$orderby=${encodeURIComponent(orderBy)}`;
+  } else {
+    path += `&$orderby=receivedDateTime desc`;
+  }
+
+  if (filter) {
+    path += `&$filter=${encodeURIComponent(filter)}`;
+  }
+
+  const result = await graphRequest<{ value: GraphMailMessage[] }>(cfg, "GET", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  const messages = result.data.value.map((msg) => ({
+    id: msg.id,
+    subject: msg.subject,
+    preview: msg.bodyPreview,
+    from: msg.from?.emailAddress ? `${msg.from.emailAddress.name || ""} <${msg.from.emailAddress.address}>` : undefined,
+    receivedDateTime: msg.receivedDateTime,
+    isRead: msg.isRead,
+    hasAttachments: msg.hasAttachments,
+    importance: msg.importance,
+    flagStatus: msg.flag?.flagStatus,
+  }));
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ messages, count: messages.length }, null, 2) }],
+  };
+}
+
+/**
+ * Read a single email message with full content.
+ */
+async function readEmail(
+  cfg: A365Config | undefined,
+  params: { userId: string; messageId: string },
+): Promise<ToolResult> {
+  const { userId, messageId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!messageId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+  }
+
+  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
+
+  const result = await graphRequest<GraphMailMessage>(cfg, "GET", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  const msg = result.data;
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        id: msg.id,
+        subject: msg.subject,
+        from: msg.from?.emailAddress ? `${msg.from.emailAddress.name || ""} <${msg.from.emailAddress.address}>` : undefined,
+        to: msg.toRecipients?.map((r) => `${r.emailAddress.name || ""} <${r.emailAddress.address}>`),
+        cc: msg.ccRecipients?.map((r) => `${r.emailAddress.name || ""} <${r.emailAddress.address}>`),
+        body: msg.body?.content,
+        bodyType: msg.body?.contentType,
+        receivedDateTime: msg.receivedDateTime,
+        sentDateTime: msg.sentDateTime,
+        isRead: msg.isRead,
+        hasAttachments: msg.hasAttachments,
+        importance: msg.importance,
+        conversationId: msg.conversationId,
+      }, null, 2),
+    }],
+  };
+}
+
+/**
+ * Search emails using KQL (Keyword Query Language).
+ */
+async function searchEmails(
+  cfg: A365Config | undefined,
+  params: { userId: string; query: string; top?: number },
+): Promise<ToolResult> {
+  const { userId, query, top = 10 } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!query?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "query is required" }] };
+  }
+
+  const clampedTop = Math.min(Math.max(top, 1), 50);
+  const path = `/users/${encodeURIComponent(userId)}/messages?$search="${encodeURIComponent(query)}"&$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance`;
+
+  const result = await graphRequest<{ value: GraphMailMessage[] }>(cfg, "GET", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  const messages = result.data.value.map((msg) => ({
+    id: msg.id,
+    subject: msg.subject,
+    preview: msg.bodyPreview,
+    from: msg.from?.emailAddress ? `${msg.from.emailAddress.name || ""} <${msg.from.emailAddress.address}>` : undefined,
+    receivedDateTime: msg.receivedDateTime,
+    isRead: msg.isRead,
+    hasAttachments: msg.hasAttachments,
+    importance: msg.importance,
+  }));
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ messages, count: messages.length, query }, null, 2) }],
+  };
+}
+
+/**
+ * Move an email to a different folder.
+ */
+async function moveEmail(
+  cfg: A365Config | undefined,
+  params: { userId: string; messageId: string; destinationFolderId: string },
+): Promise<ToolResult> {
+  const { userId, messageId, destinationFolderId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!messageId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+  }
+  if (!destinationFolderId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "destinationFolderId is required" }] };
+  }
+
+  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}/move`;
+  const result = await graphRequest<GraphMailMessage>(cfg, "POST", path, { destinationId: destinationFolderId });
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ success: true, newMessageId: result.data.id }, null, 2) }],
+  };
+}
+
+/**
+ * Delete an email message.
+ */
+async function deleteEmail(
+  cfg: A365Config | undefined,
+  params: { userId: string; messageId: string },
+): Promise<ToolResult> {
+  const { userId, messageId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!messageId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+  }
+
+  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}`;
+  const result = await graphRequest<unknown>(cfg, "DELETE", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ success: true, deleted: messageId }, null, 2) }],
+  };
+}
+
+/**
+ * Mark an email as read or unread.
+ */
+async function markEmailRead(
+  cfg: A365Config | undefined,
+  params: { userId: string; messageId: string; isRead: boolean },
+): Promise<ToolResult> {
+  const { userId, messageId, isRead } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!messageId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+  }
+
+  const path = `/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(messageId)}`;
+  const result = await graphRequest<GraphMailMessage>(cfg, "PATCH", path, { isRead });
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ success: true, messageId, isRead }, null, 2) }],
+  };
+}
+
+/**
+ * Get mail folders for a user.
+ */
+async function getMailFolders(
+  cfg: A365Config | undefined,
+  params: { userId: string },
+): Promise<ToolResult> {
+  const { userId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders?$top=50&$select=id,displayName,parentFolderId,unreadItemCount,totalItemCount,childFolderCount`;
+  const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  const folders = result.data.value.map((f) => ({
+    id: f.id,
+    displayName: f.displayName,
+    unreadItemCount: f.unreadItemCount,
+    totalItemCount: f.totalItemCount,
+    childFolderCount: f.childFolderCount,
+  }));
+
+  return {
+    content: [{ type: "text", text: JSON.stringify({ folders, count: folders.length }, null, 2) }],
+  };
+}
+
+/**
  * Create the Graph API tools for the A365 channel.
  *
  * Note: The execute functions use type assertions (e.g., `params as Parameters<...>`)
@@ -900,6 +1155,82 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
         userId: Type.String({ description: "User email or ID to look up" }),
       }),
       execute: async (_toolCallId, params) => getUserInfo(cfg, params as Parameters<typeof getUserInfo>[1]),
+    },
+    // --- Mail tools ---
+    {
+      name: "get_emails",
+      label: "Get Emails",
+      description: `List emails from a user's mailbox folder. ${owner ? `Default mailbox owner: ${owner}` : "Requires userId parameter."}`,
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox to read" }),
+        folderId: Type.Optional(Type.String({ description: "Mail folder ID (default: 'inbox'). Use get_mail_folders to find folder IDs." })),
+        top: Type.Optional(Type.Number({ description: "Number of emails to return (1-50, default: 10)" })),
+        filter: Type.Optional(Type.String({ description: "OData filter (e.g., 'isRead eq false', 'hasAttachments eq true')" })),
+        orderBy: Type.Optional(Type.String({ description: "Sort order (default: 'receivedDateTime desc')" })),
+      }),
+      execute: async (_toolCallId, params) => getEmails(cfg, params as Parameters<typeof getEmails>[1]),
+    },
+    {
+      name: "read_email",
+      label: "Read Email",
+      description: "Read the full content of a specific email message by its ID.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
+        messageId: Type.String({ description: "The message ID to read (from get_emails or search_emails)" }),
+      }),
+      execute: async (_toolCallId, params) => readEmail(cfg, params as Parameters<typeof readEmail>[1]),
+    },
+    {
+      name: "search_emails",
+      label: "Search Emails",
+      description: "Search emails using KQL (Keyword Query Language). Examples: 'from:alice', 'subject:meeting', 'hasAttachments:true', 'received:2024-01-15'.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox to search" }),
+        query: Type.String({ description: "KQL search query (e.g., 'from:alice subject:meeting')" }),
+        top: Type.Optional(Type.Number({ description: "Number of results to return (1-50, default: 10)" })),
+      }),
+      execute: async (_toolCallId, params) => searchEmails(cfg, params as Parameters<typeof searchEmails>[1]),
+    },
+    {
+      name: "move_email",
+      label: "Move Email",
+      description: "Move an email to a different folder. Use get_mail_folders to find folder IDs.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
+        messageId: Type.String({ description: "The message ID to move" }),
+        destinationFolderId: Type.String({ description: "Target folder ID (use get_mail_folders to find IDs)" }),
+      }),
+      execute: async (_toolCallId, params) => moveEmail(cfg, params as Parameters<typeof moveEmail>[1]),
+    },
+    {
+      name: "delete_email",
+      label: "Delete Email",
+      description: "Delete an email message.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
+        messageId: Type.String({ description: "The message ID to delete" }),
+      }),
+      execute: async (_toolCallId, params) => deleteEmail(cfg, params as Parameters<typeof deleteEmail>[1]),
+    },
+    {
+      name: "mark_email_read",
+      label: "Mark Email Read/Unread",
+      description: "Mark an email as read or unread.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
+        messageId: Type.String({ description: "The message ID to update" }),
+        isRead: Type.Boolean({ description: "true to mark as read, false to mark as unread" }),
+      }),
+      execute: async (_toolCallId, params) => markEmailRead(cfg, params as Parameters<typeof markEmailRead>[1]),
+    },
+    {
+      name: "get_mail_folders",
+      label: "Get Mail Folders",
+      description: "List mail folders in a user's mailbox (Inbox, Sent Items, Drafts, etc.) with unread counts.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mail folders to list" }),
+      }),
+      execute: async (_toolCallId, params) => getMailFolders(cfg, params as Parameters<typeof getMailFolders>[1]),
     },
   ];
 

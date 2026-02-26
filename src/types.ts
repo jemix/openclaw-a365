@@ -243,3 +243,56 @@ export type GraphCalendarEvent = {
   isCancelled?: boolean;
   responseRequested?: boolean;
 };
+
+/**
+ * Graph API mail message.
+ */
+export type GraphMailMessage = {
+  id?: string;
+  subject?: string;
+  bodyPreview?: string;
+  body?: {
+    contentType?: string;
+    content?: string;
+  };
+  from?: {
+    emailAddress: {
+      address: string;
+      name?: string;
+    };
+  };
+  toRecipients?: Array<{
+    emailAddress: {
+      address: string;
+      name?: string;
+    };
+  }>;
+  ccRecipients?: Array<{
+    emailAddress: {
+      address: string;
+      name?: string;
+    };
+  }>;
+  receivedDateTime?: string;
+  sentDateTime?: string;
+  isRead?: boolean;
+  hasAttachments?: boolean;
+  importance?: string;
+  flag?: {
+    flagStatus?: string;
+  };
+  conversationId?: string;
+  parentFolderId?: string;
+};
+
+/**
+ * Graph API mail folder.
+ */
+export type GraphMailFolder = {
+  id?: string;
+  displayName?: string;
+  parentFolderId?: string;
+  unreadItemCount?: number;
+  totalItemCount?: number;
+  childFolderCount?: number;
+};

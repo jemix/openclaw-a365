@@ -27,3 +27,11 @@ data/
 
 # Internal docs (SDK bug reports, etc.)
 docs/sdk-bug-*.md
+
+# A365 CLI workflow files (contain secrets and local deployment config)
+a365.config.json
+a365.generated.config.json
+manifest/
+
+# Workspace files
+*.code-workspace
