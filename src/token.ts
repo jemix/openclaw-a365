@@ -175,7 +175,7 @@ export async function getGraphToken(
           const parts = token.accessToken.split(".");
           if (parts.length === 3) {
             const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
-            log.info("Token claims", { scp: payload.scp, roles: payload.roles, aud: payload.aud, sub: payload.sub });
+            log.info(`Token claims: scp="${payload.scp || "NONE"}" roles=${JSON.stringify(payload.roles || "NONE")} aud="${payload.aud}" upn="${payload.upn || payload.preferred_username || "NONE"}"`);
           }
         } catch { /* ignore decode errors */ }
         log.info("Token acquired via T1/T2 flow", { expiresAt: new Date(token.expiresAt).toISOString() });
