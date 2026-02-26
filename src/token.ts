@@ -170,6 +170,14 @@ export async function getGraphToken(
       log.debug("Attempting T1/T2/User flow", { username });
       const token = await fetchGraphTokenT1T2(tokenConfig, username, effectiveScope);
       if (token) {
+        // Decode JWT payload to inspect scopes (temporary debug)
+        try {
+          const parts = token.accessToken.split(".");
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+            log.info("Token claims", { scp: payload.scp, roles: payload.roles, aud: payload.aud, sub: payload.sub });
+          }
+        } catch { /* ignore decode errors */ }
         log.info("Token acquired via T1/T2 flow", { expiresAt: new Date(token.expiresAt).toISOString() });
         tokenCache.set(cacheKey, token);
         return token.accessToken;
