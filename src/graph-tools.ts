@@ -1090,12 +1090,16 @@ async function deleteMailFolder(
   cfg: A365Config | undefined,
   params: { userId: string; folderId: string },
 ): Promise<ToolResult> {
+  const log = getLogger();
   const { userId, folderId } = params;
+
+  log.info("deleteMailFolder called", { folderId, folderIdLength: folderId?.length, folderIdStart: folderId?.substring(0, 20) });
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}`;
+  log.info("deleteMailFolder path", { path });
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
@@ -1124,7 +1128,7 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  log.debug("moveMailFolder", { folderId, destinationId });
+  log.info("moveMailFolder called", { folderId, folderIdLength: folderId?.length, destinationId, destinationIdLength: destinationId?.length });
 
   // Don't encode folder IDs - they are base64url strings that Graph API expects raw
   const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}/move`;
