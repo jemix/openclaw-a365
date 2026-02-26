@@ -994,14 +994,17 @@ async function markEmailRead(
  */
 async function getMailFolders(
   cfg: A365Config | undefined,
-  params: { userId: string },
+  params: { userId: string; parentFolderId?: string },
 ): Promise<ToolResult> {
-  const { userId } = params;
+  const { userId, parentFolderId } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders?$top=50&$select=id,displayName,parentFolderId,unreadItemCount,totalItemCount,childFolderCount`;
+  const basePath = parentFolderId
+    ? `/users/${encodeURIComponent(userId)}/mailFolders/${encodeURIComponent(parentFolderId)}/childFolders`
+    : `/users/${encodeURIComponent(userId)}/mailFolders`;
+  const path = `${basePath}?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,totalItemCount,childFolderCount&includeHiddenFolders=true`;
   const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
 
   if (!result.ok) {
@@ -1011,13 +1014,14 @@ async function getMailFolders(
   const folders = result.data.value.map((f) => ({
     id: f.id,
     displayName: f.displayName,
+    parentFolderId: f.parentFolderId,
     unreadItemCount: f.unreadItemCount,
     totalItemCount: f.totalItemCount,
     childFolderCount: f.childFolderCount,
   }));
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ folders, count: folders.length }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ folders, count: folders.length, parentFolderId: parentFolderId ?? "root" }, null, 2) }],
   };
 }
 
@@ -1298,9 +1302,10 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
     {
       name: "get_mail_folders",
       label: "Get Mail Folders",
-      description: "List mail folders in a user's mailbox (Inbox, Sent Items, Drafts, etc.) with unread counts.",
+      description: "List mail folders in a user's mailbox. Returns top-level folders by default. Use parentFolderId to list child folders of a specific folder (for recursive traversal).",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID whose mail folders to list" }),
+        parentFolderId: Type.Optional(Type.String({ description: "Folder ID to list child folders of. Omit for top-level folders." })),
       }),
       execute: async (_toolCallId, params) => getMailFolders(cfg, params as Parameters<typeof getMailFolders>[1]),
     },
