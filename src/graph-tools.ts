@@ -9,6 +9,21 @@ const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 const DEFAULT_TIMEZONE = "UTC";
 
 /**
+ * Encode a Graph API object ID for use in URL path segments.
+ *
+ * Graph IDs (AAMk..., AQMk...) are base64-encoded and may contain:
+ * - `/` which breaks URL path structure → must be encoded to %2F
+ * - `+` which is safe in URL paths → left as-is
+ * - `=` which is safe in URL paths → left as-is (encodeURIComponent would break this)
+ *
+ * Note: encodeURIComponent encodes `=` to `%3D` which Graph API rejects ("Id is malformed").
+ * We only encode `/` which is the sole character that breaks REST path routing.
+ */
+function safeGraphId(id: string): string {
+  return id.replace(/\//g, "%2F");
+}
+
+/**
  * Get the default timezone from config, falling back to UTC.
  */
 function getDefaultTimezone(cfg?: A365Config): string {
@@ -475,7 +490,7 @@ async function updateCalendarEvent(
     if (!emailsCheck.ok) return { isError: true, content: [{ type: "text", text: emailsCheck.error }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${eventId}`;
+  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${safeGraphId(eventId)}`;
 
   const eventBody: Partial<GraphCalendarEvent> = {};
 
@@ -542,7 +557,7 @@ async function deleteCalendarEvent(
 ): Promise<ToolResult> {
   const { userId, eventId } = params;
 
-  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${eventId}`;
+  const path = `/users/${encodeURIComponent(userId)}/calendar/events/${safeGraphId(eventId)}`;
 
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
@@ -795,7 +810,7 @@ async function getEmails(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const clampedTop = Math.min(Math.max(top, 1), 50);
-  let path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
+  let path = `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
 
   if (orderBy) {
     path += `&$orderby=${encodeURIComponent(orderBy)}`;
@@ -846,7 +861,7 @@ async function readEmail(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${safeGraphId(messageId)}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
 
   const result = await graphRequest<GraphMailMessage>(cfg, "GET", path);
 
@@ -937,7 +952,7 @@ async function moveEmail(
     return { isError: true, content: [{ type: "text", text: "destinationFolderId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}/move`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${safeGraphId(messageId)}/move`;
   const result = await graphRequest<GraphMailMessage>(cfg, "POST", path, { destinationId: destinationFolderId });
 
   if (!result.ok) {
@@ -965,7 +980,7 @@ async function deleteEmail(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${safeGraphId(messageId)}`;
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
   if (!result.ok) {
@@ -993,7 +1008,7 @@ async function markEmailRead(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages/${messageId}`;
+  const path = `/users/${encodeURIComponent(userId)}/messages/${safeGraphId(messageId)}`;
   const result = await graphRequest<GraphMailMessage>(cfg, "PATCH", path, { isRead });
 
   if (!result.ok) {
@@ -1018,7 +1033,7 @@ async function getMailFolders(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders/${parentFolderId}/childFolders`
+    ? `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(parentFolderId)}/childFolders`
     : `/users/${encodeURIComponent(userId)}/mailFolders`;
   const path = `${basePath}?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,totalItemCount,childFolderCount&includeHiddenFolders=true`;
   const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
@@ -1051,7 +1066,7 @@ async function createMailFolder(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders/${parentFolderId}/childFolders`
+    ? `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(parentFolderId)}/childFolders`
     : `/users/${encodeURIComponent(userId)}/mailFolders`;
 
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", basePath, { displayName });
@@ -1074,7 +1089,7 @@ async function renameMailFolder(
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}`;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(folderId)}`;
   const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName });
 
   if (!result.ok) {
@@ -1090,16 +1105,12 @@ async function deleteMailFolder(
   cfg: A365Config | undefined,
   params: { userId: string; folderId: string },
 ): Promise<ToolResult> {
-  const log = getLogger();
   const { userId, folderId } = params;
-
-  log.info("deleteMailFolder called", { folderId, folderIdLength: folderId?.length, folderIdStart: folderId?.substring(0, 20) });
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}`;
-  log.info("deleteMailFolder path", { path });
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(folderId)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
@@ -1115,7 +1126,6 @@ async function moveMailFolder(
   cfg: A365Config | undefined,
   params: { userId: string; folderId: string; destinationId: string },
 ): Promise<ToolResult> {
-  const log = getLogger();
   const { userId, folderId, destinationId } = params;
 
   const userIdCheck = validateUserId(userId);
@@ -1128,10 +1138,7 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  log.info("moveMailFolder called", { folderId, folderIdLength: folderId?.length, destinationId, destinationIdLength: destinationId?.length });
-
-  // Don't encode folder IDs - they are base64url strings that Graph API expects raw
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${folderId}/move`;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders/${safeGraphId(folderId)}/move`;
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
 
   if (!result.ok) {
