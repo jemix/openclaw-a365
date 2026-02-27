@@ -180,6 +180,83 @@ async function graphRequest<T>(
 }
 
 /**
+ * Well-known folder names that Graph API accepts as direct path segments.
+ * These short strings won't be corrupted by an LLM.
+ */
+const WELL_KNOWN_FOLDERS = new Set([
+  "inbox", "drafts", "sentitems", "deleteditems", "junkemail",
+  "archive", "outbox", "clutter", "conflicts", "localfailures",
+  "serverfailures", "syncissues",
+]);
+
+/**
+ * Resolve a mail folder display name to its Graph API folder ID.
+ *
+ * This is the core fix for the LLM-ID-corruption problem: instead of letting
+ * the LLM pass long Base64 folder IDs between tool calls (which it tends to
+ * truncate or mangle), the tools accept human-readable display names and
+ * resolve them to IDs internally via the Graph API.
+ *
+ * Resolution order:
+ * 1. Well-known names (inbox, drafts, etc.) → used directly
+ * 2. Top-level folder displayName match (case-insensitive)
+ * 3. One-level-deep child folder search
+ */
+async function resolveMailFolderByName(
+  cfg: A365Config | undefined,
+  userId: string,
+  folderName: string,
+): Promise<{ ok: true; folderId: string; displayName: string } | { ok: false; error: string }> {
+  const log = getLogger();
+
+  // Well-known folder names work directly as path segments
+  const lower = folderName.toLowerCase().trim();
+  if (WELL_KNOWN_FOLDERS.has(lower)) {
+    return { ok: true, folderId: lower, displayName: folderName };
+  }
+
+  // List top-level folders
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName,childFolderCount&includeHiddenFolders=true`;
+  const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
+  if (!result.ok) {
+    return { ok: false, error: `Failed to list folders: ${result.error}` };
+  }
+
+  // Case-insensitive match on displayName at top level
+  const match = result.data.value.find(
+    (f) => f.displayName?.toLowerCase() === lower,
+  );
+  if (match?.id) {
+    log.debug("Resolved folder by name", { folderName, folderId: match.id.substring(0, 20) });
+    return { ok: true, folderId: match.id, displayName: match.displayName ?? folderName };
+  }
+
+  // Search child folders (one level deep) for folders that have children
+  for (const folder of result.data.value) {
+    if ((folder.childFolderCount ?? 0) > 0 && folder.id) {
+      const childPath = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folder.id)}/childFolders?$top=100&$select=id,displayName&includeHiddenFolders=true`;
+      const childResult = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", childPath);
+      if (childResult.ok) {
+        const childMatch = childResult.data.value.find(
+          (f) => f.displayName?.toLowerCase() === lower,
+        );
+        if (childMatch?.id) {
+          log.debug("Resolved child folder by name", { folderName, parent: folder.displayName, folderId: childMatch.id.substring(0, 20) });
+          return { ok: true, folderId: childMatch.id, displayName: childMatch.displayName ?? folderName };
+        }
+      }
+    }
+  }
+
+  // Not found — return available names so the LLM can retry
+  const available = result.data.value
+    .map((f) => f.displayName)
+    .filter(Boolean)
+    .join(", ");
+  return { ok: false, error: `Folder "${folderName}" not found. Available top-level folders: ${available}` };
+}
+
+/**
  * Validate common tool parameters.
  */
 function validateUserId(userId: string): { ok: true } | { ok: false; error: string } {
@@ -804,15 +881,19 @@ async function findMeetingTimes(
  */
 async function getEmails(
   cfg: A365Config | undefined,
-  params: { userId: string; folderId?: string; top?: number; filter?: string; orderBy?: string },
+  params: { userId: string; folderName?: string; top?: number; filter?: string; orderBy?: string },
 ): Promise<ToolResult> {
-  const { userId, folderId = "inbox", top = 10, filter, orderBy } = params;
+  const { userId, folderName = "inbox", top = 10, filter, orderBy } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
+  // Resolve folder name → ID internally
+  const resolved = await resolveMailFolderByName(cfg, userId, folderName);
+  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+
   const clampedTop = Math.min(Math.max(top, 1), 50);
-  let path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
+  let path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
 
   if (orderBy) {
     path += `&$orderby=${encodeURIComponent(orderBy)}`;
@@ -940,9 +1021,9 @@ async function searchEmails(
  */
 async function moveEmail(
   cfg: A365Config | undefined,
-  params: { userId: string; messageId: string; destinationFolderId: string },
+  params: { userId: string; messageId: string; destinationFolderName: string },
 ): Promise<ToolResult> {
-  const { userId, messageId, destinationFolderId } = params;
+  const { userId, messageId, destinationFolderName } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
@@ -950,12 +1031,16 @@ async function moveEmail(
   if (!messageId?.trim()) {
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
-  if (!destinationFolderId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "destinationFolderId is required" }] };
+  if (!destinationFolderName?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "destinationFolderName is required" }] };
   }
 
+  // Resolve destination folder name → ID internally
+  const resolved = await resolveMailFolderByName(cfg, userId, destinationFolderName);
+  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/move`;
-  const result = await graphRequest<GraphMailMessage>(cfg, "POST", path, { destinationId: destinationFolderId });
+  const result = await graphRequest<GraphMailMessage>(cfg, "POST", path, { destinationId: resolved.folderId });
 
   if (!result.ok) {
     return { isError: true, content: [{ type: "text", text: result.error }] };
@@ -1027,16 +1112,22 @@ async function markEmailRead(
  */
 async function getMailFolders(
   cfg: A365Config | undefined,
-  params: { userId: string; parentFolderId?: string },
+  params: { userId: string; parentFolderName?: string },
 ): Promise<ToolResult> {
-  const { userId, parentFolderId } = params;
+  const { userId, parentFolderName } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders${graphId(parentFolderId)}/childFolders`
-    : `/users/${encodeURIComponent(userId)}/mailFolders`;
+  let basePath: string;
+  if (parentFolderName) {
+    const resolved = await resolveMailFolderByName(cfg, userId, parentFolderName);
+    if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+    basePath = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}/childFolders`;
+  } else {
+    basePath = `/users/${encodeURIComponent(userId)}/mailFolders`;
+  }
+
   const path = `${basePath}?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,totalItemCount,childFolderCount&includeHiddenFolders=true`;
   const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
 
@@ -1045,31 +1136,34 @@ async function getMailFolders(
   }
 
   const folders = result.data.value.map((f) => ({
-    id: f.id,
     displayName: f.displayName,
-    parentFolderId: f.parentFolderId,
     unreadItemCount: f.unreadItemCount,
     totalItemCount: f.totalItemCount,
     childFolderCount: f.childFolderCount,
   }));
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ folders, count: folders.length, parentFolderId: parentFolderId ?? "root" }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ folders, count: folders.length, parentFolder: parentFolderName ?? "root" }, null, 2) }],
   };
 }
 
 async function createMailFolder(
   cfg: A365Config | undefined,
-  params: { userId: string; displayName: string; parentFolderId?: string },
+  params: { userId: string; displayName: string; parentFolderName?: string },
 ): Promise<ToolResult> {
-  const { userId, displayName, parentFolderId } = params;
+  const { userId, displayName, parentFolderName } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders${graphId(parentFolderId)}/childFolders`
-    : `/users/${encodeURIComponent(userId)}/mailFolders`;
+  let basePath: string;
+  if (parentFolderName) {
+    const resolved = await resolveMailFolderByName(cfg, userId, parentFolderName);
+    if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+    basePath = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}/childFolders`;
+  } else {
+    basePath = `/users/${encodeURIComponent(userId)}/mailFolders`;
+  }
 
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", basePath, { displayName });
 
@@ -1078,216 +1172,97 @@ async function createMailFolder(
   }
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ created: true, id: result.data.id, displayName: result.data.displayName }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ created: true, displayName: result.data.displayName }, null, 2) }],
   };
 }
 
 async function renameMailFolder(
   cfg: A365Config | undefined,
-  params: { userId: string; folderId: string; displayName: string },
+  params: { userId: string; folderName: string; newName: string },
 ): Promise<ToolResult> {
-  const { userId, folderId, displayName } = params;
+  const { userId, folderName, newName } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}`;
+  // Resolve folder name → ID internally (bypasses LLM ID corruption)
+  const resolved = await resolveMailFolderByName(cfg, userId, folderName);
+  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
 
-  // Diagnostic: GET the folder first to verify the ID is valid
-  const getResult = await graphRequest<GraphMailFolder>(cfg, "GET", `${path}?$select=id,displayName`);
-
-  const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName });
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName: newName });
 
   if (!result.ok) {
-    const diag = `[v14 | GET=${getResult.ok ? `OK id=${getResult.ok && "data" in getResult ? getResult.data.id?.substring(0, 12) : "?"}…` : `FAIL ${getResult.errorCode}`} | PATCH=${result.status}/${result.errorCode} | path=${path} | rawId=${folderId.substring(0, 20)}… | idLen=${folderId.length} | hasEquals=${folderId.includes("=")} | hasSlash=${folderId.includes("/")} | hasPlus=${folderId.includes("+")}]`;
-    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+    return { isError: true, content: [{ type: "text", text: result.error }] };
   }
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ renamed: true, id: result.data.id, displayName: result.data.displayName }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ renamed: true, oldName: folderName, newName: result.data.displayName }, null, 2) }],
   };
 }
 
 async function deleteMailFolder(
   cfg: A365Config | undefined,
-  params: { userId: string; folderId: string },
+  params: { userId: string; folderName: string },
 ): Promise<ToolResult> {
-  const { userId, folderId } = params;
+  const { userId, folderName } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  if (!folderId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "folderId is required" }] };
+  if (!folderName?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "folderName is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}`;
+  // Resolve folder name → ID internally (bypasses LLM ID corruption)
+  const resolved = await resolveMailFolderByName(cfg, userId, folderName);
+  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    const diag = `[v13 | DELETE ${path} | ${result.rawError}]`;
-    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+    return { isError: true, content: [{ type: "text", text: result.error }] };
   }
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ deleted: true, folderId }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ deleted: true, folderName }, null, 2) }],
   };
 }
 
 async function moveMailFolder(
   cfg: A365Config | undefined,
-  params: { userId: string; folderId: string; destinationId: string },
+  params: { userId: string; folderName: string; destinationName: string },
 ): Promise<ToolResult> {
-  const { userId, folderId, destinationId } = params;
+  const { userId, folderName, destinationName } = params;
 
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  if (!folderId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "folderId is required (use the folder ID from get_mail_folders, not the display name)" }] };
+  if (!folderName?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "folderName is required" }] };
   }
-  if (!destinationId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
+  if (!destinationName?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "destinationName is required" }] };
   }
+
+  // Resolve both folder names → IDs internally (bypasses LLM ID corruption)
+  const sourceResolved = await resolveMailFolderByName(cfg, userId, folderName);
+  if (!sourceResolved.ok) return { isError: true, content: [{ type: "text", text: `Source: ${sourceResolved.error}` }] };
+
+  const destResolved = await resolveMailFolderByName(cfg, userId, destinationName);
+  if (!destResolved.ok) return { isError: true, content: [{ type: "text", text: `Destination: ${destResolved.error}` }] };
 
   const userPath = `/users/${encodeURIComponent(userId)}`;
+  const movePath = `${userPath}/mailFolders${graphId(sourceResolved.folderId)}/move`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId: destResolved.folderId });
 
-  // Strategy 1: POST /move action (standard Graph API)
-  const movePath = `${userPath}/mailFolders${graphId(folderId)}/move`;
-  const moveResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId });
-  if (moveResult.ok) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ moved: true, id: moveResult.data.id, displayName: moveResult.data.displayName, newParentFolderId: destinationId, via: "move-action" }, null, 2) }],
-    };
-  }
-
-  // Strategy 2: PATCH parentFolderId (undocumented but may work)
-  if (moveResult.errorCode === "ErrorInvalidIdMalformed") {
-    const patchPath = `${userPath}/mailFolders${graphId(folderId)}`;
-    const patchResult = await graphRequest<GraphMailFolder>(cfg, "PATCH", patchPath, { parentFolderId: destinationId });
-    if (patchResult.ok) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ moved: true, id: patchResult.data.id, displayName: patchResult.data.displayName, newParentFolderId: destinationId, via: "patch-parentFolderId" }, null, 2) }],
-      };
-    }
-
-    // Strategy 3: POST /move on beta endpoint
-    const betaResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId }, { useBeta: true });
-    if (betaResult.ok) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ moved: true, id: betaResult.data.id, displayName: betaResult.data.displayName, newParentFolderId: destinationId, via: "beta-move" }, null, 2) }],
-      };
-    }
-
-    const diag = `[v13 | movePath=${movePath} | moveErr=${moveResult.rawError} | patchErr=${patchResult.rawError} | betaErr=${betaResult.rawError}]`;
-    return { isError: true, content: [{ type: "text", text: `Move failed with all strategies. ${diag}` }] };
-  }
-
-  return { isError: true, content: [{ type: "text", text: moveResult.error }] };
-}
-
-/**
- * Diagnostic tool: tests folder operations using IDs from the Graph API directly,
- * bypassing LLM ID handling to isolate whether the LLM corrupts folder IDs.
- *
- * Creates a test folder, then uses the API-returned ID to test GET, PATCH (rename),
- * and DELETE operations. Reports results for each step.
- */
-async function diagnoseFolderOps(
-  cfg: A365Config | undefined,
-  params: { userId: string },
-): Promise<ToolResult> {
-  const { userId } = params;
-
-  const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
-
-  const userPath = `/users/${encodeURIComponent(userId)}`;
-  const results: string[] = [];
-  const ts = Date.now();
-
-  // Step 1: Create a test folder
-  const createResult = await graphRequest<GraphMailFolder>(cfg, "POST", `${userPath}/mailFolders`, {
-    displayName: `_DiagTest_${ts}`,
-  });
-  if (!createResult.ok) {
-    return { isError: true, content: [{ type: "text", text: `[v15-diag] Step 1 CREATE failed: ${createResult.rawError}` }] };
-  }
-  const folderId = createResult.data.id!;
-  results.push(`✅ CREATE: id=${folderId} (len=${folderId.length}, hasSlash=${folderId.includes("/")}, hasPlus=${folderId.includes("+")}, hasEquals=${folderId.includes("=")})`);
-
-  // Step 2: GET the folder using the ID from Step 1
-  const getPath = `${userPath}/mailFolders/${folderId}?$select=id,displayName`;
-  const getResult = await graphRequest<GraphMailFolder>(cfg, "GET", getPath);
-  if (getResult.ok) {
-    results.push(`✅ GET: id=${getResult.data.id}, name=${getResult.data.displayName}`);
-  } else {
-    results.push(`❌ GET: ${getResult.status}/${getResult.errorCode} path=${getPath} raw=${getResult.rawError}`);
-  }
-
-  // Step 3: PATCH rename using the same ID
-  const patchPath = `${userPath}/mailFolders/${folderId}`;
-  const patchResult = await graphRequest<GraphMailFolder>(cfg, "PATCH", patchPath, {
-    displayName: `_DiagTest_${ts}_renamed`,
-  });
-  if (patchResult.ok) {
-    results.push(`✅ PATCH rename: newName=${patchResult.data.displayName}`);
-  } else {
-    results.push(`❌ PATCH rename: ${patchResult.status}/${patchResult.errorCode} path=${patchPath} raw=${patchResult.rawError}`);
-  }
-
-  // Step 4: Create a second folder as move destination
-  const destResult = await graphRequest<GraphMailFolder>(cfg, "POST", `${userPath}/mailFolders`, {
-    displayName: `_DiagDest_${ts}`,
-  });
-  if (!destResult.ok) {
-    results.push(`❌ CREATE dest: ${destResult.rawError}`);
-    // Still try to clean up
-    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${folderId}`);
-    return { content: [{ type: "text", text: `[v15-diag]\n${results.join("\n")}` }] };
-  }
-  const destId = destResult.data.id!;
-  results.push(`✅ CREATE dest: id=${destId}`);
-
-  // Step 5: POST /move using IDs from Steps 1 and 4
-  const movePath = `${userPath}/mailFolders/${folderId}/move`;
-  const moveResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId: destId });
-  if (moveResult.ok) {
-    results.push(`✅ MOVE: newId=${moveResult.data.id}, newParent=${moveResult.data.parentFolderId}`);
-    // Update folderId for cleanup (move may change it)
-    const movedId = moveResult.data.id || folderId;
-    // Clean up: delete both folders
-    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${movedId}`);
-    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${destId}`);
-  } else {
-    results.push(`❌ MOVE: ${moveResult.status}/${moveResult.errorCode} path=${movePath} body={destinationId:${destId.substring(0, 20)}…} raw=${moveResult.rawError}`);
-
-    // Step 5b: Try move with well-known name as fallback test
-    const moveInboxPath = `${userPath}/mailFolders/${folderId}/move`;
-    const moveInboxResult = await graphRequest<GraphMailFolder>(cfg, "POST", moveInboxPath, { destinationId: "inbox" });
-    if (moveInboxResult.ok) {
-      results.push(`✅ MOVE→inbox: works with well-known name (newId=${moveInboxResult.data.id})`);
-      const movedInboxId = moveInboxResult.data.id || folderId;
-      await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${movedInboxId}`);
-    } else {
-      results.push(`❌ MOVE→inbox: ${moveInboxResult.status}/${moveInboxResult.errorCode} raw=${moveInboxResult.rawError}`);
-    }
-
-    // Step 6: DELETE the original folder
-    const delPath = `${userPath}/mailFolders/${folderId}`;
-    const delResult = await graphRequest<Record<string, never>>(cfg, "DELETE", delPath);
-    if (delResult.ok) {
-      results.push(`✅ DELETE: folderId cleaned up`);
-    } else {
-      results.push(`❌ DELETE: ${delResult.status}/${delResult.errorCode} path=${delPath} raw=${delResult.rawError}`);
-    }
-
-    // Clean up dest folder
-    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${destId}`);
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
   }
 
   return {
-    content: [{ type: "text", text: `[v15-diag] End-to-end folder operations test:\n${results.join("\n")}` }],
+    content: [{ type: "text", text: JSON.stringify({ moved: true, folderName, destination: destinationName, newDisplayName: result.data.displayName }, null, 2) }],
   };
 }
 
@@ -1445,7 +1420,7 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
       description: `List emails from a user's mailbox folder. ${owner ? `Default mailbox owner: ${owner}` : "Requires userId parameter."}`,
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID whose mailbox to read" }),
-        folderId: Type.Optional(Type.String({ description: "Mail folder ID (default: 'inbox'). Use get_mail_folders to find folder IDs." })),
+        folderName: Type.Optional(Type.String({ description: "Folder display name (default: 'inbox'). Examples: 'inbox', 'Drafts', 'Sent Items', 'Archive', or any custom folder name." })),
         top: Type.Optional(Type.Number({ description: "Number of emails to return (1-50, default: 10)" })),
         filter: Type.Optional(Type.String({ description: "OData filter (e.g., 'isRead eq false', 'hasAttachments eq true')" })),
         orderBy: Type.Optional(Type.String({ description: "Sort order (default: 'receivedDateTime desc')" })),
@@ -1476,11 +1451,11 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
     {
       name: "move_email",
       label: "Move Email",
-      description: "Move an email to a different folder. Use get_mail_folders to find folder IDs.",
+      description: "Move an email to a different folder. Use the folder's display name as destination.",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
         messageId: Type.String({ description: "The message ID to move" }),
-        destinationFolderId: Type.String({ description: "Target folder ID (use get_mail_folders to find IDs)" }),
+        destinationFolderName: Type.String({ description: "Display name of the target folder (e.g. 'Archive', 'Inbox', 'Projects')" }),
       }),
       execute: async (_toolCallId, params) => moveEmail(cfg, params as Parameters<typeof moveEmail>[1]),
     },
@@ -1508,10 +1483,10 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
     {
       name: "get_mail_folders",
       label: "Get Mail Folders",
-      description: "List mail folders in a user's mailbox. Returns top-level folders by default. Use parentFolderId to list child folders of a specific folder (for recursive traversal).",
+      description: "List mail folders in a user's mailbox. Returns top-level folders by default. Use parentFolderName to list child folders of a specific folder.",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID whose mail folders to list" }),
-        parentFolderId: Type.Optional(Type.String({ description: "Folder ID to list child folders of. Omit for top-level folders." })),
+        parentFolderName: Type.Optional(Type.String({ description: "Display name of parent folder to list child folders of (e.g. 'Inbox', 'Archive'). Omit for top-level folders." })),
       }),
       execute: async (_toolCallId, params) => getMailFolders(cfg, params as Parameters<typeof getMailFolders>[1]),
     },
@@ -1522,53 +1497,43 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID whose mailbox to create the folder in" }),
         displayName: Type.String({ description: "Name for the new folder" }),
-        parentFolderId: Type.Optional(Type.String({ description: "Parent folder ID to create a subfolder in. Omit for top-level folder." })),
+        parentFolderName: Type.Optional(Type.String({ description: "Display name of parent folder to create a subfolder in (e.g. '_Legacy'). Omit for top-level folder." })),
       }),
       execute: async (_toolCallId, params) => createMailFolder(cfg, params as Parameters<typeof createMailFolder>[1]),
     },
     {
       name: "rename_mail_folder",
       label: "Rename Mail Folder",
-      description: "Rename an existing mail folder.",
+      description: "Rename an existing mail folder. Use the folder's current display name to identify it.",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID who owns the folder" }),
-        folderId: Type.String({ description: "ID of the folder to rename" }),
-        displayName: Type.String({ description: "New name for the folder" }),
+        folderName: Type.String({ description: "Current display name of the folder to rename (e.g. 'Old Projects')" }),
+        newName: Type.String({ description: "New display name for the folder" }),
       }),
       execute: async (_toolCallId, params) => renameMailFolder(cfg, params as Parameters<typeof renameMailFolder>[1]),
     },
     {
       name: "delete_mail_folder",
       label: "Delete Mail Folder",
-      description: "Delete a mail folder and all its contents. Use with caution.",
+      description: "Delete a mail folder and all its contents. Use the folder's display name to identify it. Use with caution.",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID who owns the folder" }),
-        folderId: Type.String({ description: "ID of the folder to delete" }),
+        folderName: Type.String({ description: "Display name of the folder to delete (e.g. 'Old Archive')" }),
       }),
       execute: async (_toolCallId, params) => deleteMailFolder(cfg, params as Parameters<typeof deleteMailFolder>[1]),
     },
     {
       name: "move_mail_folder",
       label: "Move Mail Folder",
-      description: "Move a mail folder to a new parent folder. Use to reorganize folder hierarchy (e.g., move folder under _Legacy).",
+      description: "Move a mail folder into another folder. Use display names to identify folders (e.g., move 'Projects' into '_Legacy').",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID who owns the folder" }),
-        folderId: Type.String({ description: "ID of the folder to move" }),
-        destinationId: Type.String({ description: "ID of the destination parent folder" }),
+        folderName: Type.String({ description: "Display name of the folder to move (e.g. 'Projects')" }),
+        destinationName: Type.String({ description: "Display name of the destination parent folder (e.g. '_Legacy')" }),
       }),
       execute: async (_toolCallId, params) => moveMailFolder(cfg, params as Parameters<typeof moveMailFolder>[1]),
     },
   ];
-
-  tools.push({
-    name: "diagnose_folder_ops",
-    label: "Diagnose Folder Operations",
-    description: "Diagnostic: Creates a test folder, then tests GET, RENAME, MOVE, DELETE using the API-returned ID directly (no LLM in the ID loop). Use to isolate Graph API vs LLM ID issues.",
-    parameters: Type.Object({
-      userId: Type.String({ description: "User email or ID to test folder operations on" }),
-    }),
-    execute: async (_toolCallId, params) => diagnoseFolderOps(cfg, params as Parameters<typeof diagnoseFolderOps>[1]),
-  });
 
   // Add GIF tool only if Klipy API key is configured
   if (klipyKey) {
