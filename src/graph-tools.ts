@@ -9,12 +9,11 @@ const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 const DEFAULT_TIMEZONE = "UTC";
 
 /**
- * Wraps a Graph resource ID in OData parenthetical key format: ('id')
- * This avoids base64 characters (/, +, =) breaking URL path segments.
- * Single quotes inside the ID are escaped as '' per OData convention.
+ * Encode a Graph resource ID for use in a URL path segment.
+ * Uses encodeURIComponent to safely handle base64 chars (/, +, =).
  */
-function odataId(id: string): string {
-  return `('${id.replace(/'/g, "''")}')`;
+function graphId(id: string): string {
+  return `/${encodeURIComponent(id)}`;
 }
 
 /**
@@ -486,7 +485,7 @@ async function updateCalendarEvent(
     if (!emailsCheck.ok) return { isError: true, content: [{ type: "text", text: emailsCheck.error }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/calendar/events${odataId(eventId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/calendar/events${graphId(eventId)}`;
 
   const eventBody: Partial<GraphCalendarEvent> = {};
 
@@ -553,7 +552,7 @@ async function deleteCalendarEvent(
 ): Promise<ToolResult> {
   const { userId, eventId } = params;
 
-  const path = `/users/${encodeURIComponent(userId)}/calendar/events${odataId(eventId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/calendar/events${graphId(eventId)}`;
 
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
@@ -806,7 +805,7 @@ async function getEmails(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const clampedTop = Math.min(Math.max(top, 1), 50);
-  let path = `/users/${encodeURIComponent(userId)}/mailFolders${odataId(folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
+  let path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
 
   if (orderBy) {
     path += `&$orderby=${encodeURIComponent(orderBy)}`;
@@ -857,7 +856,7 @@ async function readEmail(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages${odataId(messageId)}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
+  const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
 
   const result = await graphRequest<GraphMailMessage>(cfg, "GET", path);
 
@@ -948,7 +947,7 @@ async function moveEmail(
     return { isError: true, content: [{ type: "text", text: "destinationFolderId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages${odataId(messageId)}/move`;
+  const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/move`;
   const result = await graphRequest<GraphMailMessage>(cfg, "POST", path, { destinationId: destinationFolderId });
 
   if (!result.ok) {
@@ -976,7 +975,7 @@ async function deleteEmail(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages${odataId(messageId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}`;
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
   if (!result.ok) {
@@ -1004,7 +1003,7 @@ async function markEmailRead(
     return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/messages${odataId(messageId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}`;
   const result = await graphRequest<GraphMailMessage>(cfg, "PATCH", path, { isRead });
 
   if (!result.ok) {
@@ -1029,7 +1028,7 @@ async function getMailFolders(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders${odataId(parentFolderId)}/childFolders`
+    ? `/users/${encodeURIComponent(userId)}/mailFolders${graphId(parentFolderId)}/childFolders`
     : `/users/${encodeURIComponent(userId)}/mailFolders`;
   const path = `${basePath}?$top=100&$select=id,displayName,parentFolderId,unreadItemCount,totalItemCount,childFolderCount&includeHiddenFolders=true`;
   const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
@@ -1062,7 +1061,7 @@ async function createMailFolder(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const basePath = parentFolderId
-    ? `/users/${encodeURIComponent(userId)}/mailFolders${odataId(parentFolderId)}/childFolders`
+    ? `/users/${encodeURIComponent(userId)}/mailFolders${graphId(parentFolderId)}/childFolders`
     : `/users/${encodeURIComponent(userId)}/mailFolders`;
 
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", basePath, { displayName });
@@ -1085,7 +1084,7 @@ async function renameMailFolder(
   const userIdCheck = validateUserId(userId);
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${odataId(folderId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}`;
   const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName });
 
   if (!result.ok) {
@@ -1110,11 +1109,11 @@ async function deleteMailFolder(
     return { isError: true, content: [{ type: "text", text: "folderId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${odataId(folderId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    const diag = `[v5-odata | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | idLen=${folderId.length}]`;
+    const diag = `[v7 | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | idLen=${folderId.length}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
@@ -1139,17 +1138,31 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${odataId(folderId)}/move`;
-  const bodyObj = { destinationId };
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, bodyObj);
+  const userPath = `/users/${encodeURIComponent(userId)}`;
+
+  // Resolve destination folder to get canonical ID from Graph
+  // Well-known names (inbox, drafts, etc.) are passed through directly
+  const isWellKnown = /^[a-z]+$/i.test(destinationId) && !destinationId.startsWith("AAMk") && !destinationId.startsWith("AQMk");
+  let resolvedDestId = destinationId;
+
+  if (!isWellKnown) {
+    const destCheck = await graphRequest<GraphMailFolder>(cfg, "GET", `${userPath}/mailFolders${graphId(destinationId)}?$select=id`);
+    if (!destCheck.ok) {
+      return { isError: true, content: [{ type: "text", text: `Cannot resolve destination folder: ${destCheck.error} [v7-resolve | destId=${destinationId.substring(0, 30)}…]` }] };
+    }
+    resolvedDestId = destCheck.data.id || destinationId;
+  }
+
+  const path = `${userPath}/mailFolders${graphId(folderId)}/move`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: resolvedDestId });
 
   if (!result.ok) {
-    const diag = `[v6-bodycheck | POST ${result.path} | body=${JSON.stringify(bodyObj)} | status=${result.status} | code=${result.errorCode} | srcIdPrefix=${folderId.substring(0, 6)} | destIdPrefix=${destinationId.substring(0, 6)}]`;
+    const diag = `[v7-resolve | POST ${result.path} | resolvedDestId="${resolvedDestId.substring(0, 40)}…" | origDestId="${destinationId.substring(0, 40)}…" | idsMatch=${resolvedDestId === destinationId} | status=${result.status} | code=${result.errorCode}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: destinationId }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: resolvedDestId }, null, 2) }],
   };
 }
 
