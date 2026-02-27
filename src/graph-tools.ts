@@ -26,8 +26,8 @@ async function toRestId(
   cfg: A365Config | undefined,
   userId: string,
   id: string,
-): Promise<string> {
-  if (!id.startsWith("AAMk")) return id;
+): Promise<{ id: string; translated: boolean; error?: string }> {
+  if (!id.startsWith("AAMk")) return { id, translated: false };
 
   const path = `/users/${encodeURIComponent(userId)}/translateExchangeIds`;
   const result = await graphRequest<{ value: Array<{ sourceId: string; targetId: string }> }>(
@@ -35,11 +35,16 @@ async function toRestId(
     { inputIds: [id], sourceIdType: "ewsId", targetIdType: "restId" },
   );
 
-  if (result.ok && result.data.value?.[0]?.targetId) {
-    return result.data.value[0].targetId;
+  if (!result.ok) {
+    return { id, translated: false, error: `translate failed: ${result.status} ${result.errorCode} ${result.error}` };
   }
 
-  return id;
+  const targetId = result.data.value?.[0]?.targetId;
+  if (!targetId) {
+    return { id, translated: false, error: `translate returned no targetId: ${JSON.stringify(result.data)}` };
+  }
+
+  return { id: targetId, translated: true };
 }
 
 /**
@@ -1135,12 +1140,12 @@ async function deleteMailFolder(
     return { isError: true, content: [{ type: "text", text: "folderId is required" }] };
   }
 
-  const restId = await toRestId(cfg, userId, folderId);
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(restId)}`;
+  const rest = await toRestId(cfg, userId, folderId);
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(rest.id)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    const diag = `[v9 | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | translated=${restId !== folderId}]`;
+    const diag = `[v9.1 | DELETE | translated=${rest.translated}${rest.error ? ` ERR:${rest.error}` : ""} | id=${rest.id.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
@@ -1166,20 +1171,19 @@ async function moveMailFolder(
   }
 
   // Translate AAMk (EWS) IDs to AQMk (REST) IDs — Graph move only accepts REST format
-  const restFolderId = await toRestId(cfg, userId, folderId);
-  const restDestId = await toRestId(cfg, userId, destinationId);
+  const src = await toRestId(cfg, userId, folderId);
+  const dest = await toRestId(cfg, userId, destinationId);
 
-  const translated = restFolderId !== folderId || restDestId !== destinationId;
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(restFolderId)}/move`;
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: restDestId });
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(src.id)}/move`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: dest.id });
 
   if (!result.ok) {
-    const diag = `[v9 | translated=${translated} | srcId=${restFolderId.substring(0, 8)}… (was ${folderId.substring(0, 8)}…) | destId=${restDestId.substring(0, 8)}… (was ${destinationId.substring(0, 8)}…) | status=${result.status} | code=${result.errorCode}]`;
+    const diag = `[v9.1 | srcTranslate=${src.translated}${src.error ? ` ERR:${src.error}` : ""} | destTranslate=${dest.translated}${dest.error ? ` ERR:${dest.error}` : ""} | srcId=${src.id.substring(0, 8)}… | destId=${dest.id.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: restDestId, translated }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: dest.id, srcTranslated: src.translated, destTranslated: dest.translated }, null, 2) }],
   };
 }
 
