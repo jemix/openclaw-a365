@@ -6,6 +6,7 @@ import { getGraphToken } from "./token.js";
 import { getA365Runtime } from "./runtime.js";
 
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
+const GRAPH_BETA_URL = "https://graph.microsoft.com/beta";
 const DEFAULT_TIMEZONE = "UTC";
 
 /**
@@ -17,15 +18,6 @@ function graphId(id: string): string {
   return `('${id.replace(/'/g, "''")}')`;
 }
 
-/**
- * Strip trailing base64 padding (=) from Graph resource IDs.
- * Graph's move/delete endpoints choke on IDs containing = characters,
- * both in URL paths and in JSON body fields (destinationId).
- * Base64 decoders can reconstruct padding from string length.
- */
-function stripIdPadding(id: string): string {
-  return id.replace(/=+$/, "");
-}
 
 /**
  * Get the default timezone from config, falling back to UTC.
@@ -112,6 +104,7 @@ async function graphRequest<T>(
   method: string,
   path: string,
   body?: unknown,
+  options?: { useBeta?: boolean },
 ): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number; errorCode?: string; path?: string }> {
   const log = getLogger();
 
@@ -132,7 +125,8 @@ async function graphRequest<T>(
     return { ok: false, error: "Graph API token not available. Check T1/T2/User flow configuration (blueprintClientAppId, blueprintClientSecret, aaInstanceId)." };
   }
 
-  const url = `${GRAPH_BASE_URL}${path}`;
+  const baseUrl = options?.useBeta ? GRAPH_BETA_URL : GRAPH_BASE_URL;
+  const url = `${baseUrl}${path}`;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
@@ -1120,13 +1114,11 @@ async function deleteMailFolder(
     return { isError: true, content: [{ type: "text", text: "folderId is required" }] };
   }
 
-  const cleanId = stripIdPadding(folderId);
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(cleanId)}`;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    const diag = `[v10 | DELETE | stripped=${cleanId !== folderId} | had=${folderId.endsWith("=")} | id=${cleanId.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
-    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+    return { isError: true, content: [{ type: "text", text: result.error }] };
   }
 
   return {
@@ -1150,22 +1142,30 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  // Strip trailing = padding from IDs — Graph chokes on = in both paths and body
-  const cleanSrcId = stripIdPadding(folderId);
-  const cleanDestId = stripIdPadding(destinationId);
-  const stripped = cleanSrcId !== folderId || cleanDestId !== destinationId;
+  const movePath = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}/move`;
+  const moveBody = { destinationId };
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(cleanSrcId)}/move`;
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: cleanDestId });
-
-  if (!result.ok) {
-    const diag = `[v10 | stripped=${stripped} | srcHad=${folderId.endsWith("=")} destHad=${destinationId.endsWith("=")} | srcId=${cleanSrcId.substring(0, 8)}… | destId=${cleanDestId.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
-    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+  // Try v1.0 first
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, moveBody);
+  if (result.ok) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: destinationId, api: "v1.0" }, null, 2) }],
+    };
   }
 
-  return {
-    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: cleanDestId }, null, 2) }],
-  };
+  // If v1.0 fails with malformed ID, retry on beta endpoint
+  if (result.errorCode === "ErrorInvalidIdMalformed") {
+    const betaResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, moveBody, { useBeta: true });
+    if (betaResult.ok) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ moved: true, id: betaResult.data.id, displayName: betaResult.data.displayName, newParentFolderId: destinationId, api: "beta" }, null, 2) }],
+      };
+    }
+    const diag = `[v11 | v1.0=${result.status}/${result.errorCode} | beta=${betaResult.status}/${betaResult.errorCode} | srcPrefix=${folderId.substring(0, 6)} | destPrefix=${destinationId.substring(0, 6)}]`;
+    return { isError: true, content: [{ type: "text", text: `${betaResult.error} ${diag}` }] };
+  }
+
+  return { isError: true, content: [{ type: "text", text: result.error }] };
 }
 
 /**
