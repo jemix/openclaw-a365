@@ -16,10 +16,10 @@ const DEFAULT_TIMEZONE = "UTC";
  * - `+` which some servers interpret as space → encode to %2B
  * - `#` which starts a URL fragment → encode to %23
  * - `?` which starts a query string → encode to %3F
- * - `=` which is safe in URL paths → left as-is (encodeURIComponent encodes to %3D which Graph rejects)
+ * - `=` must be encoded (%3D) because `id=/move` confuses the URL path parser
  */
 function safeGraphId(id: string): string {
-  return id.replace(/[/+#?]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+  return id.replace(/[/+#?=]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 }
 
 /**
