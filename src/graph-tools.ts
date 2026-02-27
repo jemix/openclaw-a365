@@ -1158,38 +1158,55 @@ async function moveMailFolder(
   // If the direct move failed with malformed ID and dest is not a well-known name,
   // try resolving the destination by listing all folders and matching by ID.
   if (result.errorCode === "ErrorInvalidIdMalformed" && !isWellKnown) {
-    // Fetch all folders and find the one matching our destinationId
     const listResult = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", `${userPath}/mailFolders?$top=200&$select=id,displayName`);
-    if (listResult.ok) {
-      const destFolder = listResult.data.value?.find((f) => f.id === destinationId);
-      if (destFolder?.displayName) {
-        // Try move with well-known style: use displayName lookup via filter
-        const filterResult = await graphRequest<{ value: GraphMailFolder[] }>(
-          cfg, "GET",
-          `${userPath}/mailFolders?$filter=displayName eq '${destFolder.displayName.replace(/'/g, "''")}'&$select=id`,
-        );
-        const canonicalId = filterResult.ok ? filterResult.data.value?.[0]?.id : undefined;
 
-        if (canonicalId && canonicalId !== destinationId) {
-          // Retry move with the canonical ID from the list/filter
-          const retryResult = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: canonicalId });
-          if (retryResult.ok) {
-            return {
-              content: [{ type: "text", text: JSON.stringify({ moved: true, id: retryResult.data.id, displayName: retryResult.data.displayName, newParentFolderId: canonicalId, resolvedVia: "filter" }, null, 2) }],
-            };
-          }
-          const diag = `[v8 | retry with canonicalId also failed | canonicalId="${canonicalId.substring(0, 40)}…" | origId="${destinationId.substring(0, 40)}…" | status=${retryResult.status} | code=${retryResult.errorCode}]`;
-          return { isError: true, content: [{ type: "text", text: `${retryResult.error} ${diag}` }] };
-        }
-
-        // IDs match or filter failed — report what we found
-        const diag = `[v8 | folder found in list: "${destFolder.displayName}" | canonicalId=${canonicalId?.substring(0, 30) ?? "none"} | idsMatch=${canonicalId === destinationId} | listId="${destinationId.substring(0, 40)}…"]`;
-        return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
-      }
+    if (!listResult.ok) {
+      const diag = `[v8.1 | FALLBACK list failed: ${listResult.error} | status=${listResult.status} | code=${listResult.errorCode}]`;
+      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
     }
+
+    const allFolders = listResult.data.value ?? [];
+    const destFolder = allFolders.find((f) => f.id === destinationId);
+    const folderNames = allFolders.map((f) => `${f.displayName}(${f.id?.substring(0, 12)}…)`).join(", ");
+
+    if (!destFolder) {
+      // Folder not found by exact ID match — dump all folder IDs for comparison
+      const diag = `[v8.1 | dest NOT in list | destId="${destinationId}" | folders=[${folderNames}] | count=${allFolders.length}]`;
+      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+    }
+
+    // Found the folder in the list — check if the ID from list differs
+    const listId = destFolder.id || "";
+    const diag = `[v8.1 | dest found: "${destFolder.displayName}" | listId="${listId}" | inputId="${destinationId}" | idsMatch=${listId === destinationId} | exact=${listId === destinationId}]`;
+
+    // If IDs are identical, the move endpoint simply doesn't accept this format.
+    // Try the displayName as destinationId (Graph might accept folder names like well-known ones)
+    if (listId === destinationId && destFolder.displayName) {
+      // Last resort: try move with displayName as destinationId
+      const nameResult = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: destFolder.displayName });
+      if (nameResult.ok) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ moved: true, id: nameResult.data.id, displayName: nameResult.data.displayName, resolvedVia: "displayName" }, null, 2) }],
+        };
+      }
+      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag} | nameRetry=${nameResult.errorCode}` }] };
+    }
+
+    // IDs differ — retry with the list ID
+    if (listId !== destinationId) {
+      const retryResult = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: listId });
+      if (retryResult.ok) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ moved: true, id: retryResult.data.id, displayName: retryResult.data.displayName, resolvedVia: "listId" }, null, 2) }],
+        };
+      }
+      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag} | listIdRetry=${retryResult.errorCode}` }] };
+    }
+
+    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
-  const diag = `[v8 | POST ${result.path} | status=${result.status} | code=${result.errorCode} | destIdPrefix=${destinationId.substring(0, 6)}]`;
+  const diag = `[v8.1 | POST ${result.path} | status=${result.status} | code=${result.errorCode} | destIdPrefix=${destinationId.substring(0, 6)}]`;
   return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
 }
 
