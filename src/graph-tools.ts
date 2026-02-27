@@ -18,6 +18,31 @@ function graphId(id: string): string {
 }
 
 /**
+ * Translate an AAMk (EWS-format) ID to AQMk (REST-format) ID.
+ * Graph API's move/copy actions only reliably accept REST-format IDs.
+ * If the ID is already in REST format (AQMk) or translation fails, returns the original.
+ */
+async function toRestId(
+  cfg: A365Config | undefined,
+  userId: string,
+  id: string,
+): Promise<string> {
+  if (!id.startsWith("AAMk")) return id;
+
+  const path = `/users/${encodeURIComponent(userId)}/translateExchangeIds`;
+  const result = await graphRequest<{ value: Array<{ sourceId: string; targetId: string }> }>(
+    cfg, "POST", path,
+    { inputIds: [id], sourceIdType: "ewsId", targetIdType: "restId" },
+  );
+
+  if (result.ok && result.data.value?.[0]?.targetId) {
+    return result.data.value[0].targetId;
+  }
+
+  return id;
+}
+
+/**
  * Get the default timezone from config, falling back to UTC.
  */
 function getDefaultTimezone(cfg?: A365Config): string {
@@ -1110,11 +1135,12 @@ async function deleteMailFolder(
     return { isError: true, content: [{ type: "text", text: "folderId is required" }] };
   }
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}`;
+  const restId = await toRestId(cfg, userId, folderId);
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(restId)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    const diag = `[v8 | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | idLen=${folderId.length}]`;
+    const diag = `[v9 | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | translated=${restId !== folderId}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
@@ -1139,75 +1165,22 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  const userPath = `/users/${encodeURIComponent(userId)}`;
+  // Translate AAMk (EWS) IDs to AQMk (REST) IDs — Graph move only accepts REST format
+  const restFolderId = await toRestId(cfg, userId, folderId);
+  const restDestId = await toRestId(cfg, userId, destinationId);
 
-  // Well-known names (inbox, drafts, etc.) are passed through directly
-  const isWellKnown = /^[a-z]+$/i.test(destinationId) && !destinationId.startsWith("AAMk") && !destinationId.startsWith("AQMk");
+  const translated = restFolderId !== folderId || restDestId !== destinationId;
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(restFolderId)}/move`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: restDestId });
 
-  // Try the move — if it fails with ErrorInvalidIdMalformed and we have
-  // a raw AAMk/AQMk destinationId, look up the folder by displayName as fallback.
-  const path = `${userPath}/mailFolders${graphId(folderId)}/move`;
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
-
-  if (result.ok) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: destinationId }, null, 2) }],
-    };
-  }
-
-  // If the direct move failed with malformed ID and dest is not a well-known name,
-  // try resolving the destination by listing all folders and matching by ID.
-  if (result.errorCode === "ErrorInvalidIdMalformed" && !isWellKnown) {
-    const listResult = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", `${userPath}/mailFolders?$top=200&$select=id,displayName`);
-
-    if (!listResult.ok) {
-      const diag = `[v8.1 | FALLBACK list failed: ${listResult.error} | status=${listResult.status} | code=${listResult.errorCode}]`;
-      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
-    }
-
-    const allFolders = listResult.data.value ?? [];
-    const destFolder = allFolders.find((f) => f.id === destinationId);
-    const folderNames = allFolders.map((f) => `${f.displayName}(${f.id?.substring(0, 12)}…)`).join(", ");
-
-    if (!destFolder) {
-      // Folder not found by exact ID match — dump all folder IDs for comparison
-      const diag = `[v8.1 | dest NOT in list | destId="${destinationId}" | folders=[${folderNames}] | count=${allFolders.length}]`;
-      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
-    }
-
-    // Found the folder in the list — check if the ID from list differs
-    const listId = destFolder.id || "";
-    const diag = `[v8.1 | dest found: "${destFolder.displayName}" | listId="${listId}" | inputId="${destinationId}" | idsMatch=${listId === destinationId} | exact=${listId === destinationId}]`;
-
-    // If IDs are identical, the move endpoint simply doesn't accept this format.
-    // Try the displayName as destinationId (Graph might accept folder names like well-known ones)
-    if (listId === destinationId && destFolder.displayName) {
-      // Last resort: try move with displayName as destinationId
-      const nameResult = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: destFolder.displayName });
-      if (nameResult.ok) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ moved: true, id: nameResult.data.id, displayName: nameResult.data.displayName, resolvedVia: "displayName" }, null, 2) }],
-        };
-      }
-      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag} | nameRetry=${nameResult.errorCode}` }] };
-    }
-
-    // IDs differ — retry with the list ID
-    if (listId !== destinationId) {
-      const retryResult = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: listId });
-      if (retryResult.ok) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ moved: true, id: retryResult.data.id, displayName: retryResult.data.displayName, resolvedVia: "listId" }, null, 2) }],
-        };
-      }
-      return { isError: true, content: [{ type: "text", text: `${result.error} ${diag} | listIdRetry=${retryResult.errorCode}` }] };
-    }
-
+  if (!result.ok) {
+    const diag = `[v9 | translated=${translated} | srcId=${restFolderId.substring(0, 8)}… (was ${folderId.substring(0, 8)}…) | destId=${restDestId.substring(0, 8)}… (was ${destinationId.substring(0, 8)}…) | status=${result.status} | code=${result.errorCode}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
-  const diag = `[v8.1 | POST ${result.path} | status=${result.status} | code=${result.errorCode} | destIdPrefix=${destinationId.substring(0, 6)}]`;
-  return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+  return {
+    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: restDestId, translated }, null, 2) }],
+  };
 }
 
 /**
