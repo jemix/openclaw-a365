@@ -107,7 +107,7 @@ async function graphRequest<T>(
   method: string,
   path: string,
   body?: unknown,
-): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number }> {
+): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number; errorCode?: string; path?: string }> {
   const log = getLogger();
 
   // Get the username for token acquisition
@@ -148,13 +148,15 @@ async function graphRequest<T>(
       const errorText = await response.text();
       log.warn("Graph API error", { status: response.status, error: errorText.slice(0, 200) });
       let errorMessage = `Graph API error: ${response.status}`;
+      let errorCode = "";
       try {
         const errorJson = JSON.parse(errorText);
+        errorCode = errorJson.error?.code || "";
         errorMessage = errorJson.error?.message || errorMessage;
       } catch {
         errorMessage = errorText || errorMessage;
       }
-      return { ok: false, error: errorMessage, status: response.status };
+      return { ok: false, error: errorMessage, status: response.status, errorCode, path };
     }
 
     // Handle empty-body success responses (202 Accepted, 204 No Content)
@@ -1118,8 +1120,7 @@ async function deleteMailFolder(
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    // Include diagnostic info for debugging "Id is malformed" errors
-    const diag = `[v3-safeGraphId | idLen=${folderId.length} | raw="${folderId.substring(0, 30)}…" | encoded="${encodedId.substring(0, 30)}…"]`;
+    const diag = `[v4-diag | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | idLen=${folderId.length} | id="${folderId.substring(0, 40)}…"]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
@@ -1150,7 +1151,7 @@ async function moveMailFolder(
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
 
   if (!result.ok) {
-    const diag = `[v3-safeGraphId | folderIdLen=${folderId.length} | raw="${folderId.substring(0, 30)}…" | encoded="${encodedFolderId.substring(0, 30)}…" | destIdLen=${destinationId.length}]`;
+    const diag = `[v4-diag | POST ${result.path} | body.destinationId="${destinationId.substring(0, 40)}…" | status=${result.status} | code=${result.errorCode} | idLen=${folderId.length} | id="${folderId.substring(0, 40)}…"]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
