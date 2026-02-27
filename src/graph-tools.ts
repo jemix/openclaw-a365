@@ -1560,15 +1560,15 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
     },
   ];
 
-    {
-      name: "diagnose_folder_ops",
-      label: "Diagnose Folder Operations",
-      description: "Diagnostic: Creates a test folder, then tests GET, RENAME, MOVE, DELETE using the API-returned ID directly (no LLM in the ID loop). Use to isolate Graph API vs LLM ID issues.",
-      parameters: Type.Object({
-        userId: Type.String({ description: "User email or ID to test folder operations on" }),
-      }),
-      execute: async (_toolCallId, params) => diagnoseFolderOps(cfg, params as Parameters<typeof diagnoseFolderOps>[1]),
-    },
+  tools.push({
+    name: "diagnose_folder_ops",
+    label: "Diagnose Folder Operations",
+    description: "Diagnostic: Creates a test folder, then tests GET, RENAME, MOVE, DELETE using the API-returned ID directly (no LLM in the ID loop). Use to isolate Graph API vs LLM ID issues.",
+    parameters: Type.Object({
+      userId: Type.String({ description: "User email or ID to test folder operations on" }),
+    }),
+    execute: async (_toolCallId, params) => diagnoseFolderOps(cfg, params as Parameters<typeof diagnoseFolderOps>[1]),
+  });
 
   // Add GIF tool only if Klipy API key is configured
   if (klipyKey) {
