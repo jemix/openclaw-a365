@@ -1140,10 +1140,11 @@ async function moveMailFolder(
   }
 
   const path = `/users/${encodeURIComponent(userId)}/mailFolders${odataId(folderId)}/move`;
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
+  const bodyObj = { destinationId };
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, bodyObj);
 
   if (!result.ok) {
-    const diag = `[v5-odata | POST ${result.path} | destId="${destinationId.substring(0, 40)}…" | status=${result.status} | code=${result.errorCode}]`;
+    const diag = `[v6-bodycheck | POST ${result.path} | body=${JSON.stringify(bodyObj)} | status=${result.status} | code=${result.errorCode} | srcIdPrefix=${folderId.substring(0, 6)} | destIdPrefix=${destinationId.substring(0, 6)}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
