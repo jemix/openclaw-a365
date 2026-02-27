@@ -18,33 +18,13 @@ function graphId(id: string): string {
 }
 
 /**
- * Translate an AAMk (EWS-format) ID to AQMk (REST-format) ID.
- * Graph API's move/copy actions only reliably accept REST-format IDs.
- * If the ID is already in REST format (AQMk) or translation fails, returns the original.
+ * Strip trailing base64 padding (=) from Graph resource IDs.
+ * Graph's move/delete endpoints choke on IDs containing = characters,
+ * both in URL paths and in JSON body fields (destinationId).
+ * Base64 decoders can reconstruct padding from string length.
  */
-async function toRestId(
-  cfg: A365Config | undefined,
-  userId: string,
-  id: string,
-): Promise<{ id: string; translated: boolean; error?: string }> {
-  if (!id.startsWith("AAMk")) return { id, translated: false };
-
-  const path = `/users/${encodeURIComponent(userId)}/translateExchangeIds`;
-  const result = await graphRequest<{ value: Array<{ sourceId: string; targetId: string }> }>(
-    cfg, "POST", path,
-    { inputIds: [id], sourceIdType: "ewsId", targetIdType: "restId" },
-  );
-
-  if (!result.ok) {
-    return { id, translated: false, error: `translate failed: ${result.status} ${result.errorCode} ${result.error}` };
-  }
-
-  const targetId = result.data.value?.[0]?.targetId;
-  if (!targetId) {
-    return { id, translated: false, error: `translate returned no targetId: ${JSON.stringify(result.data)}` };
-  }
-
-  return { id: targetId, translated: true };
+function stripIdPadding(id: string): string {
+  return id.replace(/=+$/, "");
 }
 
 /**
@@ -1140,12 +1120,12 @@ async function deleteMailFolder(
     return { isError: true, content: [{ type: "text", text: "folderId is required" }] };
   }
 
-  const rest = await toRestId(cfg, userId, folderId);
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(rest.id)}`;
+  const cleanId = stripIdPadding(folderId);
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(cleanId)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    const diag = `[v9.1 | DELETE | translated=${rest.translated}${rest.error ? ` ERR:${rest.error}` : ""} | id=${rest.id.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
+    const diag = `[v10 | DELETE | stripped=${cleanId !== folderId} | had=${folderId.endsWith("=")} | id=${cleanId.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
@@ -1170,20 +1150,21 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  // Translate AAMk (EWS) IDs to AQMk (REST) IDs — Graph move only accepts REST format
-  const src = await toRestId(cfg, userId, folderId);
-  const dest = await toRestId(cfg, userId, destinationId);
+  // Strip trailing = padding from IDs — Graph chokes on = in both paths and body
+  const cleanSrcId = stripIdPadding(folderId);
+  const cleanDestId = stripIdPadding(destinationId);
+  const stripped = cleanSrcId !== folderId || cleanDestId !== destinationId;
 
-  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(src.id)}/move`;
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: dest.id });
+  const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(cleanSrcId)}/move`;
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: cleanDestId });
 
   if (!result.ok) {
-    const diag = `[v9.1 | srcTranslate=${src.translated}${src.error ? ` ERR:${src.error}` : ""} | destTranslate=${dest.translated}${dest.error ? ` ERR:${dest.error}` : ""} | srcId=${src.id.substring(0, 8)}… | destId=${dest.id.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
+    const diag = `[v10 | stripped=${stripped} | srcHad=${folderId.endsWith("=")} destHad=${destinationId.endsWith("=")} | srcId=${cleanSrcId.substring(0, 8)}… | destId=${cleanDestId.substring(0, 8)}… | status=${result.status} | code=${result.errorCode}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
   return {
-    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: dest.id, srcTranslated: src.translated, destTranslated: dest.translated }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: cleanDestId }, null, 2) }],
   };
 }
 
