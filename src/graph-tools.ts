@@ -10,12 +10,13 @@ const GRAPH_BETA_URL = "https://graph.microsoft.com/beta";
 const DEFAULT_TIMEZONE = "UTC";
 
 /**
- * Format a Graph resource ID as OData parenthetical key: ('id')
- * This is the safest format for base64 IDs containing /, +, =.
- * Single quotes in the ID are escaped as '' per OData convention.
+ * Encode a Graph resource ID for safe use in URL path segments.
+ * Only encodes characters that break URL parsing: / + # ? =
+ * Returns the ID prefixed with / for direct path interpolation.
  */
 function graphId(id: string): string {
-  return `('${id.replace(/'/g, "''")}')`;
+  const encoded = id.replace(/[/+#?=]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+  return `/${encoded}`;
 }
 
 
@@ -105,7 +106,7 @@ async function graphRequest<T>(
   path: string,
   body?: unknown,
   options?: { useBeta?: boolean },
-): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number; errorCode?: string; path?: string }> {
+): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number; errorCode?: string; path?: string; rawError?: string }> {
   const log = getLogger();
 
   // Get the username for token acquisition
@@ -148,14 +149,16 @@ async function graphRequest<T>(
       log.warn("Graph API error", { status: response.status, error: errorText.slice(0, 200) });
       let errorMessage = `Graph API error: ${response.status}`;
       let errorCode = "";
+      let rawError = errorText.slice(0, 500);
       try {
         const errorJson = JSON.parse(errorText);
         errorCode = errorJson.error?.code || "";
         errorMessage = errorJson.error?.message || errorMessage;
+        rawError = JSON.stringify(errorJson.error, null, 0).slice(0, 500);
       } catch {
         errorMessage = errorText || errorMessage;
       }
-      return { ok: false, error: errorMessage, status: response.status, errorCode, path };
+      return { ok: false, error: errorMessage, status: response.status, errorCode, path, rawError };
     }
 
     // Handle empty-body success responses (202 Accepted, 204 No Content)
@@ -1093,7 +1096,8 @@ async function renameMailFolder(
   const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName });
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    const diag = `[v13 | PATCH ${path} | ${result.rawError}]`;
+    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
   return {
@@ -1118,7 +1122,8 @@ async function deleteMailFolder(
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    const diag = `[v13 | DELETE ${path} | ${result.rawError}]`;
+    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
   return {
@@ -1171,7 +1176,7 @@ async function moveMailFolder(
       };
     }
 
-    const diag = `[v12 | move=${moveResult.status}/${moveResult.errorCode} | patch=${patchResult.status}/${patchResult.errorCode} | beta=${betaResult.status}/${betaResult.errorCode}]`;
+    const diag = `[v13 | movePath=${movePath} | moveErr=${moveResult.rawError} | patchErr=${patchResult.rawError} | betaErr=${betaResult.rawError}]`;
     return { isError: true, content: [{ type: "text", text: `Move failed with all strategies. ${diag}` }] };
   }
 
