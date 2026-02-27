@@ -1187,6 +1187,111 @@ async function moveMailFolder(
 }
 
 /**
+ * Diagnostic tool: tests folder operations using IDs from the Graph API directly,
+ * bypassing LLM ID handling to isolate whether the LLM corrupts folder IDs.
+ *
+ * Creates a test folder, then uses the API-returned ID to test GET, PATCH (rename),
+ * and DELETE operations. Reports results for each step.
+ */
+async function diagnoseFolderOps(
+  cfg: A365Config | undefined,
+  params: { userId: string },
+): Promise<ToolResult> {
+  const { userId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  const userPath = `/users/${encodeURIComponent(userId)}`;
+  const results: string[] = [];
+  const ts = Date.now();
+
+  // Step 1: Create a test folder
+  const createResult = await graphRequest<GraphMailFolder>(cfg, "POST", `${userPath}/mailFolders`, {
+    displayName: `_DiagTest_${ts}`,
+  });
+  if (!createResult.ok) {
+    return { isError: true, content: [{ type: "text", text: `[v15-diag] Step 1 CREATE failed: ${createResult.rawError}` }] };
+  }
+  const folderId = createResult.data.id!;
+  results.push(`✅ CREATE: id=${folderId} (len=${folderId.length}, hasSlash=${folderId.includes("/")}, hasPlus=${folderId.includes("+")}, hasEquals=${folderId.includes("=")})`);
+
+  // Step 2: GET the folder using the ID from Step 1
+  const getPath = `${userPath}/mailFolders/${folderId}?$select=id,displayName`;
+  const getResult = await graphRequest<GraphMailFolder>(cfg, "GET", getPath);
+  if (getResult.ok) {
+    results.push(`✅ GET: id=${getResult.data.id}, name=${getResult.data.displayName}`);
+  } else {
+    results.push(`❌ GET: ${getResult.status}/${getResult.errorCode} path=${getPath} raw=${getResult.rawError}`);
+  }
+
+  // Step 3: PATCH rename using the same ID
+  const patchPath = `${userPath}/mailFolders/${folderId}`;
+  const patchResult = await graphRequest<GraphMailFolder>(cfg, "PATCH", patchPath, {
+    displayName: `_DiagTest_${ts}_renamed`,
+  });
+  if (patchResult.ok) {
+    results.push(`✅ PATCH rename: newName=${patchResult.data.displayName}`);
+  } else {
+    results.push(`❌ PATCH rename: ${patchResult.status}/${patchResult.errorCode} path=${patchPath} raw=${patchResult.rawError}`);
+  }
+
+  // Step 4: Create a second folder as move destination
+  const destResult = await graphRequest<GraphMailFolder>(cfg, "POST", `${userPath}/mailFolders`, {
+    displayName: `_DiagDest_${ts}`,
+  });
+  if (!destResult.ok) {
+    results.push(`❌ CREATE dest: ${destResult.rawError}`);
+    // Still try to clean up
+    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${folderId}`);
+    return { content: [{ type: "text", text: `[v15-diag]\n${results.join("\n")}` }] };
+  }
+  const destId = destResult.data.id!;
+  results.push(`✅ CREATE dest: id=${destId}`);
+
+  // Step 5: POST /move using IDs from Steps 1 and 4
+  const movePath = `${userPath}/mailFolders/${folderId}/move`;
+  const moveResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId: destId });
+  if (moveResult.ok) {
+    results.push(`✅ MOVE: newId=${moveResult.data.id}, newParent=${moveResult.data.parentFolderId}`);
+    // Update folderId for cleanup (move may change it)
+    const movedId = moveResult.data.id || folderId;
+    // Clean up: delete both folders
+    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${movedId}`);
+    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${destId}`);
+  } else {
+    results.push(`❌ MOVE: ${moveResult.status}/${moveResult.errorCode} path=${movePath} body={destinationId:${destId.substring(0, 20)}…} raw=${moveResult.rawError}`);
+
+    // Step 5b: Try move with well-known name as fallback test
+    const moveInboxPath = `${userPath}/mailFolders/${folderId}/move`;
+    const moveInboxResult = await graphRequest<GraphMailFolder>(cfg, "POST", moveInboxPath, { destinationId: "inbox" });
+    if (moveInboxResult.ok) {
+      results.push(`✅ MOVE→inbox: works with well-known name (newId=${moveInboxResult.data.id})`);
+      const movedInboxId = moveInboxResult.data.id || folderId;
+      await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${movedInboxId}`);
+    } else {
+      results.push(`❌ MOVE→inbox: ${moveInboxResult.status}/${moveInboxResult.errorCode} raw=${moveInboxResult.rawError}`);
+    }
+
+    // Step 6: DELETE the original folder
+    const delPath = `${userPath}/mailFolders/${folderId}`;
+    const delResult = await graphRequest<Record<string, never>>(cfg, "DELETE", delPath);
+    if (delResult.ok) {
+      results.push(`✅ DELETE: folderId cleaned up`);
+    } else {
+      results.push(`❌ DELETE: ${delResult.status}/${delResult.errorCode} path=${delPath} raw=${delResult.rawError}`);
+    }
+
+    // Clean up dest folder
+    await graphRequest<Record<string, never>>(cfg, "DELETE", `${userPath}/mailFolders/${destId}`);
+  }
+
+  return {
+    content: [{ type: "text", text: `[v15-diag] End-to-end folder operations test:\n${results.join("\n")}` }],
+  };
+}
+
+/**
  * Create the Graph API tools for the A365 channel.
  *
  * Note: The execute functions use type assertions (e.g., `params as Parameters<...>`)
@@ -1454,6 +1559,16 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
       execute: async (_toolCallId, params) => moveMailFolder(cfg, params as Parameters<typeof moveMailFolder>[1]),
     },
   ];
+
+    {
+      name: "diagnose_folder_ops",
+      label: "Diagnose Folder Operations",
+      description: "Diagnostic: Creates a test folder, then tests GET, RENAME, MOVE, DELETE using the API-returned ID directly (no LLM in the ID loop). Use to isolate Graph API vs LLM ID issues.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID to test folder operations on" }),
+      }),
+      execute: async (_toolCallId, params) => diagnoseFolderOps(cfg, params as Parameters<typeof diagnoseFolderOps>[1]),
+    },
 
   // Add GIF tool only if Klipy API key is configured
   if (klipyKey) {
