@@ -10,13 +10,12 @@ const GRAPH_BETA_URL = "https://graph.microsoft.com/beta";
 const DEFAULT_TIMEZONE = "UTC";
 
 /**
- * Encode a Graph resource ID for safe use in URL path segments.
- * Only encodes characters that break URL parsing: / + # ? =
- * Returns the ID prefixed with / for direct path interpolation.
+ * Format a Graph resource ID for use in URL path segments.
+ * Returns the raw ID prefixed with / — no encoding.
+ * This matches the original working implementation.
  */
 function graphId(id: string): string {
-  const encoded = id.replace(/[/+#?=]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
-  return `/${encoded}`;
+  return `/${id}`;
 }
 
 
@@ -1093,10 +1092,14 @@ async function renameMailFolder(
   if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
 
   const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}`;
+
+  // Diagnostic: GET the folder first to verify the ID is valid
+  const getResult = await graphRequest<GraphMailFolder>(cfg, "GET", `${path}?$select=id,displayName`);
+
   const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName });
 
   if (!result.ok) {
-    const diag = `[v13 | PATCH ${path} | ${result.rawError}]`;
+    const diag = `[v14 | GET=${getResult.ok ? `OK id=${getResult.ok && "data" in getResult ? getResult.data.id?.substring(0, 12) : "?"}…` : `FAIL ${getResult.errorCode}`} | PATCH=${result.status}/${result.errorCode} | path=${path} | rawId=${folderId.substring(0, 20)}… | idLen=${folderId.length} | hasEquals=${folderId.includes("=")} | hasSlash=${folderId.includes("/")} | hasPlus=${folderId.includes("+")}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
