@@ -1142,30 +1142,40 @@ async function moveMailFolder(
     return { isError: true, content: [{ type: "text", text: "destinationId is required (use the folder ID from get_mail_folders, not the display name)" }] };
   }
 
-  const movePath = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(folderId)}/move`;
-  const moveBody = { destinationId };
+  const userPath = `/users/${encodeURIComponent(userId)}`;
 
-  // Try v1.0 first
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, moveBody);
-  if (result.ok) {
+  // Strategy 1: POST /move action (standard Graph API)
+  const movePath = `${userPath}/mailFolders${graphId(folderId)}/move`;
+  const moveResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId });
+  if (moveResult.ok) {
     return {
-      content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: destinationId, api: "v1.0" }, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify({ moved: true, id: moveResult.data.id, displayName: moveResult.data.displayName, newParentFolderId: destinationId, via: "move-action" }, null, 2) }],
     };
   }
 
-  // If v1.0 fails with malformed ID, retry on beta endpoint
-  if (result.errorCode === "ErrorInvalidIdMalformed") {
-    const betaResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, moveBody, { useBeta: true });
-    if (betaResult.ok) {
+  // Strategy 2: PATCH parentFolderId (undocumented but may work)
+  if (moveResult.errorCode === "ErrorInvalidIdMalformed") {
+    const patchPath = `${userPath}/mailFolders${graphId(folderId)}`;
+    const patchResult = await graphRequest<GraphMailFolder>(cfg, "PATCH", patchPath, { parentFolderId: destinationId });
+    if (patchResult.ok) {
       return {
-        content: [{ type: "text", text: JSON.stringify({ moved: true, id: betaResult.data.id, displayName: betaResult.data.displayName, newParentFolderId: destinationId, api: "beta" }, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify({ moved: true, id: patchResult.data.id, displayName: patchResult.data.displayName, newParentFolderId: destinationId, via: "patch-parentFolderId" }, null, 2) }],
       };
     }
-    const diag = `[v11 | v1.0=${result.status}/${result.errorCode} | beta=${betaResult.status}/${betaResult.errorCode} | srcPrefix=${folderId.substring(0, 6)} | destPrefix=${destinationId.substring(0, 6)}]`;
-    return { isError: true, content: [{ type: "text", text: `${betaResult.error} ${diag}` }] };
+
+    // Strategy 3: POST /move on beta endpoint
+    const betaResult = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId }, { useBeta: true });
+    if (betaResult.ok) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ moved: true, id: betaResult.data.id, displayName: betaResult.data.displayName, newParentFolderId: destinationId, via: "beta-move" }, null, 2) }],
+      };
+    }
+
+    const diag = `[v12 | move=${moveResult.status}/${moveResult.errorCode} | patch=${patchResult.status}/${patchResult.errorCode} | beta=${betaResult.status}/${betaResult.errorCode}]`;
+    return { isError: true, content: [{ type: "text", text: `Move failed with all strategies. ${diag}` }] };
   }
 
-  return { isError: true, content: [{ type: "text", text: result.error }] };
+  return { isError: true, content: [{ type: "text", text: moveResult.error }] };
 }
 
 /**
