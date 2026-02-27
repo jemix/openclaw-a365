@@ -9,11 +9,12 @@ const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 const DEFAULT_TIMEZONE = "UTC";
 
 /**
- * Encode a Graph resource ID for use in a URL path segment.
- * Uses encodeURIComponent to safely handle base64 chars (/, +, =).
+ * Format a Graph resource ID as OData parenthetical key: ('id')
+ * This is the safest format for base64 IDs containing /, +, =.
+ * Single quotes in the ID are escaped as '' per OData convention.
  */
 function graphId(id: string): string {
-  return `/${encodeURIComponent(id)}`;
+  return `('${id.replace(/'/g, "''")}')`;
 }
 
 /**
@@ -1113,7 +1114,7 @@ async function deleteMailFolder(
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    const diag = `[v7 | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | idLen=${folderId.length}]`;
+    const diag = `[v8 | DELETE ${result.path} | status=${result.status} | code=${result.errorCode} | idLen=${folderId.length}]`;
     return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
   }
 
@@ -1140,30 +1141,56 @@ async function moveMailFolder(
 
   const userPath = `/users/${encodeURIComponent(userId)}`;
 
-  // Resolve destination folder to get canonical ID from Graph
   // Well-known names (inbox, drafts, etc.) are passed through directly
   const isWellKnown = /^[a-z]+$/i.test(destinationId) && !destinationId.startsWith("AAMk") && !destinationId.startsWith("AQMk");
-  let resolvedDestId = destinationId;
 
-  if (!isWellKnown) {
-    const destCheck = await graphRequest<GraphMailFolder>(cfg, "GET", `${userPath}/mailFolders${graphId(destinationId)}?$select=id`);
-    if (!destCheck.ok) {
-      return { isError: true, content: [{ type: "text", text: `Cannot resolve destination folder: ${destCheck.error} [v7-resolve | destId=${destinationId.substring(0, 30)}…]` }] };
-    }
-    resolvedDestId = destCheck.data.id || destinationId;
-  }
-
+  // Try the move — if it fails with ErrorInvalidIdMalformed and we have
+  // a raw AAMk/AQMk destinationId, look up the folder by displayName as fallback.
   const path = `${userPath}/mailFolders${graphId(folderId)}/move`;
-  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: resolvedDestId });
+  const result = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId });
 
-  if (!result.ok) {
-    const diag = `[v7-resolve | POST ${result.path} | resolvedDestId="${resolvedDestId.substring(0, 40)}…" | origDestId="${destinationId.substring(0, 40)}…" | idsMatch=${resolvedDestId === destinationId} | status=${result.status} | code=${result.errorCode}]`;
-    return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+  if (result.ok) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: destinationId }, null, 2) }],
+    };
   }
 
-  return {
-    content: [{ type: "text", text: JSON.stringify({ moved: true, id: result.data.id, displayName: result.data.displayName, newParentFolderId: resolvedDestId }, null, 2) }],
-  };
+  // If the direct move failed with malformed ID and dest is not a well-known name,
+  // try resolving the destination by listing all folders and matching by ID.
+  if (result.errorCode === "ErrorInvalidIdMalformed" && !isWellKnown) {
+    // Fetch all folders and find the one matching our destinationId
+    const listResult = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", `${userPath}/mailFolders?$top=200&$select=id,displayName`);
+    if (listResult.ok) {
+      const destFolder = listResult.data.value?.find((f) => f.id === destinationId);
+      if (destFolder?.displayName) {
+        // Try move with well-known style: use displayName lookup via filter
+        const filterResult = await graphRequest<{ value: GraphMailFolder[] }>(
+          cfg, "GET",
+          `${userPath}/mailFolders?$filter=displayName eq '${destFolder.displayName.replace(/'/g, "''")}'&$select=id`,
+        );
+        const canonicalId = filterResult.ok ? filterResult.data.value?.[0]?.id : undefined;
+
+        if (canonicalId && canonicalId !== destinationId) {
+          // Retry move with the canonical ID from the list/filter
+          const retryResult = await graphRequest<GraphMailFolder>(cfg, "POST", path, { destinationId: canonicalId });
+          if (retryResult.ok) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ moved: true, id: retryResult.data.id, displayName: retryResult.data.displayName, newParentFolderId: canonicalId, resolvedVia: "filter" }, null, 2) }],
+            };
+          }
+          const diag = `[v8 | retry with canonicalId also failed | canonicalId="${canonicalId.substring(0, 40)}…" | origId="${destinationId.substring(0, 40)}…" | status=${retryResult.status} | code=${retryResult.errorCode}]`;
+          return { isError: true, content: [{ type: "text", text: `${retryResult.error} ${diag}` }] };
+        }
+
+        // IDs match or filter failed — report what we found
+        const diag = `[v8 | folder found in list: "${destFolder.displayName}" | canonicalId=${canonicalId?.substring(0, 30) ?? "none"} | idsMatch=${canonicalId === destinationId} | listId="${destinationId.substring(0, 40)}…"]`;
+        return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
+      }
+    }
+  }
+
+  const diag = `[v8 | POST ${result.path} | status=${result.status} | code=${result.errorCode} | destIdPrefix=${destinationId.substring(0, 6)}]`;
+  return { isError: true, content: [{ type: "text", text: `${result.error} ${diag}` }] };
 }
 
 /**
