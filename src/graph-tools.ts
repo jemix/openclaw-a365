@@ -1108,6 +1108,50 @@ async function markEmailRead(
 }
 
 /**
+ * Forward an email to one or more recipients.
+ */
+async function forwardEmail(
+  cfg: A365Config | undefined,
+  params: { userId: string; messageId: string; to: string[]; comment?: string },
+): Promise<ToolResult> {
+  const { userId, messageId, to, comment = "" } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!messageId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+  }
+
+  if (to.length === 0) {
+    return { isError: true, content: [{ type: "text", text: "At least one recipient is required in 'to' field" }] };
+  }
+
+  const toCheck = validateEmails(to, "to");
+  if (!toCheck.ok) return { isError: true, content: [{ type: "text", text: toCheck.error }] };
+
+  const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/forward`;
+
+  const body = {
+    toRecipients: to.map((email) => ({ emailAddress: { address: email } })),
+    comment,
+  };
+
+  const result = await graphRequest<unknown>(cfg, "POST", path, body);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({ success: true, message: `Email forwarded to ${to.join(", ")}` }, null, 2),
+    }],
+  };
+}
+
+/**
  * Get mail folders for a user.
  */
 async function getMailFolders(
@@ -1479,6 +1523,18 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
         isRead: Type.Boolean({ description: "true to mark as read, false to mark as unread" }),
       }),
       execute: async (_toolCallId, params) => markEmailRead(cfg, params as Parameters<typeof markEmailRead>[1]),
+    },
+    {
+      name: "forward_email",
+      label: "Forward Email",
+      description: "Forward an existing email to one or more recipients, optionally adding a comment.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
+        messageId: Type.String({ description: "The message ID to forward (from get_emails or search_emails)" }),
+        to: Type.Array(Type.String(), { description: "List of recipient email addresses" }),
+        comment: Type.Optional(Type.String({ description: "Optional text to prepend to the forwarded message" })),
+      }),
+      execute: async (_toolCallId, params) => forwardEmail(cfg, params as Parameters<typeof forwardEmail>[1]),
     },
     {
       name: "get_mail_folders",
