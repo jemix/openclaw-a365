@@ -25,5 +25,8 @@
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@mariozechner/pi-agent-core": "0.52.9",
     "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
   }
 }
