@@ -3,8 +3,18 @@
   "version": "2026.2.8-2",
   "description": "OpenClaw A365 (Microsoft 365 Agents) channel plugin with Graph API tools",
   "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "config",
+    "docs"
+  ],
   "devDependencies": {
-    "openclaw": "^2026.2.9"
+    "openclaw": "^2026.2.9",
+    "typescript": "^5.7.0"
   },
   "dependencies": {
     "@azure/msal-node": "^2.16.2",
@@ -12,10 +22,5 @@
     "@microsoft/agents-hosting": "^1.1.0",
     "@microsoft/agents-hosting-express": "^1.1.0",
     "@microsoft/microsoft-graph-client": "^3.0.7"
-  },
-  "openclaw": {
-    "extensions": [
-      "./index.ts"
-    ]
   }
 }
