@@ -9,32 +9,34 @@ OpenClaw A365 is a Microsoft 365 Agents (A365) channel plugin for OpenClaw. It p
 - Perform calendar, email, and user operations via Microsoft Graph API
 - Authenticate as an agentic identity (its own service account, not on-behalf-of-user)
 
-## Build and Run Commands
+## Deployment Model
 
-**Development with Docker Compose (recommended):**
+This plugin is deployed as a **tgz archive** installed into OpenClaw via `plugins install` — **not** via Docker. Docker/docker-compose in this repo are legacy and not used in production.
+
+**Production setup (Mac Mini, user `openclaw`):**
+- Source repo: `~/projects/a365/` (git clone of `jemix/openclaw-a365`)
+- Installed extension: `~/.openclaw/extensions/a365/`
+- OpenClaw gateway: runs as LaunchAgent `ai.openclaw.gateway`
+- Webhook endpoint: `https://aipa-x.jemix.com/api/messages` → port 3978
+
+**Deploy workflow (Mac Mini):**
 ```bash
-docker-compose up -d        # Build from source and run
-docker-compose logs -f      # View logs
-docker-compose down         # Stop
+cd ~/projects/a365
+git pull
+pnpm install       # PATH: /opt/homebrew/opt/node/bin + ~/.npm-global/bin
+pnpm build         # compiles TypeScript → dist/ (ignores type errors, see below)
+pnpm pack          # creates openclaw-a365-<version>.tgz
+openclaw plugins install ./openclaw-a365-<version>.tgz
+# then ask Jerry to restart the gateway via launchctl
 ```
 
-**Run pre-built image:**
-```bash
-docker run --cap-add=NET_ADMIN --env-file .env -p 3978:3978 ghcr.io/sidu/openclaw-a365:latest
-```
+**Important:** Never restart the gateway autonomously. Always ask Jerry — a critical task may be running.
 
-**OpenClaw CLI commands (inside container or local dev):**
-```bash
-pnpm openclaw doctor --fix              # Validate/fix configuration
-pnpm openclaw models set <model>        # Set primary model
-pnpm openclaw models fallbacks add <m>  # Add fallback model
-pnpm openclaw models status             # Check model configuration
-pnpm openclaw gateway                   # Start the gateway
-pnpm openclaw plugins install .         # Install plugin from current dir
-pnpm openclaw plugins enable a365       # Enable A365 plugin
-```
+## Build Setup
 
-**Note:** There is no explicit test runner configured. Test files exist (`src/*.test.ts`) but are designed for the OpenClaw test framework.
+- `tsconfig.json`: `strict: false`, `noEmitOnError: false` — the codebase has SDK type drift against newer OpenClaw types. The compiled JS works correctly at runtime; type errors are cosmetic. Do not attempt to fix them unless explicitly requested.
+- `pnpm build` exits 0 regardless of type errors (uses `tsc || true`)
+- Test files (`*.test.ts`) are excluded from the build via tsconfig `exclude`
 
 ## Architecture
 
@@ -42,14 +44,15 @@ pnpm openclaw plugins enable a365       # Enable A365 plugin
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | Plugin entry point - exports `plugin` object that registers with OpenClaw |
-| `src/channel.ts` | Channel plugin implementation - registers with OpenClaw, provides capabilities |
-| `src/monitor.ts` | Bot Framework webhook listener - receives A365 messages on port 3978 |
-| `src/token.ts` | Token management - T1/T2/Agent token flow, in-memory cache |
-| `src/graph-tools.ts` | Graph API tools for LLM - calendar, email, user operations |
+| `index.ts` | Plugin entry point — exports `plugin` object that registers with OpenClaw |
+| `src/channel.ts` | Channel plugin implementation — registers with OpenClaw, provides capabilities |
+| `src/monitor.ts` | Bot Framework webhook listener — receives A365 messages on port 3978 |
+| `src/token.ts` | Token management — T1/T2/Agent token flow, in-memory cache |
+| `src/graph-tools.ts` | Graph API tools for LLM — calendar, email, attachments, user operations |
 | `src/outbound.ts` | Sends messages back to Bot Framework |
 | `src/conversation-store.ts` | Persists conversation references for proactive messaging |
 | `src/types.ts` | TypeScript types and config schemas |
+| `skills/a365/SKILL.md` | Plugin skill — loaded by OpenClaw, tells the agent what it can do |
 
 ### Message Flow
 
@@ -61,7 +64,7 @@ pnpm openclaw plugins enable a365       # Enable A365 plugin
 ### Key Patterns
 
 **Thread-safe context (`src/graph-tools.ts`):**
-Uses `AsyncLocalStorage` for isolating request context. Always wrap request handlers with `runWithGraphToolContext()` - this prevents cross-request data leakage.
+Uses `AsyncLocalStorage` for isolating request context. Always wrap request handlers with `runWithGraphToolContext()` — this prevents cross-request data leakage.
 
 **Token acquisition (`src/token.ts`):**
 - T1 Token: client credentials + fmi_path
@@ -69,30 +72,59 @@ Uses `AsyncLocalStorage` for isolating request context. Always wrap request hand
 - Agent Token: User FIC for agent identity
 - All tokens cached in-memory with 5-minute buffer before expiration
 
-**Network policy (`scripts/network-policy.sh`):**
-Enforces iptables rules based on `NETWORK_MODE` env var. Runs at container startup, resolves domains to IPs, and blocks all non-allowlisted outbound traffic.
+**Folder tools use display names, not IDs:**
+Graph API mail folder IDs (~120 char Base64) get corrupted by LLMs between tool calls. All folder tools accept `displayName` (e.g. `"Inbox"`, `"Archive"`) and resolve to IDs internally via `resolveMailFolderByName()`. Never change this back to ID-based.
 
 **Proactive messaging (`src/conversation-store.ts`):**
-Stores conversation references (serviceUrl, conversationId, botId, etc.) to a JSON file at `~/.openclaw/a365-conversations.json`. This enables sending messages back to conversations later (e.g., cron job results, async task completion). The store is automatically populated when messages are received and looked up when sending via `sendMessageA365()`.
+Stores conversation references to `~/.openclaw/a365-conversations.json`. Enables sending messages back to conversations later (cron, async tasks).
+
+## Adding New Tools
+
+When adding a Graph API tool to `src/graph-tools.ts`:
+
+1. **Implement** the async function following the existing pattern (validate userId, call `graphRequest`, return `ToolResult`)
+2. **Register** in `createGraphTools()` with `name`, `label`, `description`, `parameters` (TypeBox), `execute`
+3. **Check permissions** — verify the required Graph scope is already in the delegated scopes. Current scopes: `Mail.ReadWrite`, `Mail.Send`, `Mail.ReadWrite.Shared`, `Mail.Send.Shared`, `Chat.ReadWrite`, `User.Read.All`, `Sites.Read.All`, `Calendars.ReadWrite`, `Calendars.ReadWrite.Shared`. New scopes require PowerShell + Graph API changes in Entra (see `docs/A365-OPERATIONS.md`)
+4. **Update `skills/a365/SKILL.md`** — add the tool to the tool list so the agent knows it exists
+5. **Bump version** in `package.json` and `openclaw.plugin.json`
+6. **Deploy** using the workflow above
 
 ## Configuration
 
-Configuration is via environment variables. Copy `.env.example` to `.env` and fill in:
+The plugin reads config from two sources (with env var fallback):
 
-**Required:**
-- `A365_APP_ID`, `A365_APP_PASSWORD`, `A365_TENANT_ID` - Bot Framework credentials
-- `AA_INSTANCE_ID` - Agentic Blueprint for token flow
-- `AGENT_IDENTITY` - Agent's UPN (e.g., `agent@contoso.com`)
-- `OWNER`, `OWNER_AAD_ID` - Owner identity
-- At least one LLM API key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
+1. **`~/.openclaw/openclaw.json`** → `channels.a365` section — contains all operational config with `${ENV_VAR}` interpolation:
+   ```json
+   {
+     "enabled": true,
+     "tenantId": "${A365_TENANT_ID}",
+     "appId": "${A365_APP_ID}",
+     "appPassword": "${A365_APP_PASSWORD}",
+     "webhook": { "port": 3978, "path": "/api/messages" },
+     "graph": { "aaInstanceId": "${AA_INSTANCE_ID}", "scope": "https://graph.microsoft.com/.default" },
+     "agentIdentity": "${AGENT_IDENTITY}",
+     "owner": "${OWNER}",
+     "ownerAadId": "${OWNER_AAD_ID}"
+   }
+   ```
+   **Important:** `plugins install` does NOT reset this config. But if it ever gets lost (e.g. manual cleanup), it must be restored manually — the plugin will fail silently without `agentIdentity` and `owner`.
 
-**Network modes:**
-- `unrestricted` (default): No network restrictions
-- `restricted`: Only Microsoft + LLM provider domains
-- `allowlist`: Essential domains + `NETWORK_ALLOWLIST` custom domains
+2. **`~/.openclaw/.env`** — env vars used as fallbacks by `token.ts`: `A365_APP_ID`, `A365_APP_PASSWORD`, `A365_TENANT_ID`, `AA_INSTANCE_ID`, `AGENT_IDENTITY`, `OWNER`, `OWNER_AAD_ID`
+
+## Skills
+
+`skills/a365/SKILL.md` is the canonical source of truth for what the agent can do. It is loaded automatically by OpenClaw when the a365 channel is active.
+
+**When to update `SKILL.md`:**
+- After adding or removing a tool in `graph-tools.ts`
+- After adding or removing a Graph permission
+
+Do NOT maintain a separate TOOLS.md for A365 tool documentation — it will drift. The skill is the single source of truth.
 
 ## Key Concepts
 
-**Agentic Identity**: The agent has its own Entra ID user account (`AGENT_IDENTITY`). It only accesses resources explicitly shared with it - this is different from traditional "on-behalf-of" OAuth flows. Users share calendars/resources with the agent like they would with a colleague.
+**Agentic Identity**: The agent has its own Entra ID user account (`AGENT_IDENTITY`). It only accesses resources explicitly shared with it — this is different from traditional "on-behalf-of" OAuth flows. Users share calendars/resources with the agent like they would with a colleague.
 
 **Role detection**: When `OWNER_AAD_ID` matches the message sender, they get `UserRole: Owner`. Others get `UserRole: Requester`.
+
+**No App Permissions in Entra**: The Blueprint app uses delegated tokens (T1/T2/FIC). Never manually add Application permissions to the Blueprint app in Entra UI — only inheritable delegated scopes via Graph API PowerShell.
