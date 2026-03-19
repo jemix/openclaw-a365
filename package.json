@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/a365",
-  "version": "2026.2.8-2",
+  "version": "2026.3.19-1",
   "description": "OpenClaw A365 (Microsoft 365 Agents) channel plugin with Graph API tools",
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
   "files": [
     "dist",
     "openclaw.plugin.json",
+    "skills",
     "config",
     "docs"
   ],

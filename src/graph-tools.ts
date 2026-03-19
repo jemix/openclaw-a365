@@ -1152,6 +1152,88 @@ async function forwardEmail(
 }
 
 /**
+ * Get attachments for an email message.
+ */
+async function getEmailAttachments(
+  cfg: A365Config | undefined,
+  params: { userId: string; messageId: string },
+): Promise<ToolResult> {
+  const { userId, messageId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!messageId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+  }
+
+  const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/attachments?$select=id,name,contentType,size,isInline`;
+
+  const result = await graphRequest<{ value: Array<{ id: string; name: string; contentType: string; size: number; isInline: boolean; contentBytes?: string }> }>(cfg, "GET", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  const attachments = result.data.value.map((a) => ({
+    id: a.id,
+    name: a.name,
+    contentType: a.contentType,
+    sizeBytes: a.size,
+    isInline: a.isInline,
+  }));
+
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({ attachments, count: attachments.length }, null, 2),
+    }],
+  };
+}
+
+/**
+ * Download the content of a specific email attachment as base64.
+ */
+async function downloadEmailAttachment(
+  cfg: A365Config | undefined,
+  params: { userId: string; messageId: string; attachmentId: string },
+): Promise<ToolResult> {
+  const { userId, messageId, attachmentId } = params;
+
+  const userIdCheck = validateUserId(userId);
+  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+
+  if (!messageId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+  }
+  if (!attachmentId?.trim()) {
+    return { isError: true, content: [{ type: "text", text: "attachmentId is required" }] };
+  }
+
+  const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/attachments/${encodeURIComponent(attachmentId)}`;
+
+  const result = await graphRequest<{ id: string; name: string; contentType: string; size: number; contentBytes: string }>(cfg, "GET", path);
+
+  if (!result.ok) {
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
+  const a = result.data;
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        id: a.id,
+        name: a.name,
+        contentType: a.contentType,
+        sizeBytes: a.size,
+        contentBase64: a.contentBytes,
+      }, null, 2),
+    }],
+  };
+}
+
+/**
  * Get mail folders for a user.
  */
 async function getMailFolders(
@@ -1535,6 +1617,27 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
         comment: Type.Optional(Type.String({ description: "Optional text to prepend to the forwarded message" })),
       }),
       execute: async (_toolCallId, params) => forwardEmail(cfg, params as Parameters<typeof forwardEmail>[1]),
+    },
+    {
+      name: "get_email_attachments",
+      label: "Get Email Attachments",
+      description: "List all attachments of an email message (name, type, size). Use this first to see what attachments exist.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
+        messageId: Type.String({ description: "The message ID (from get_emails or search_emails)" }),
+      }),
+      execute: async (_toolCallId, params) => getEmailAttachments(cfg, params as Parameters<typeof getEmailAttachments>[1]),
+    },
+    {
+      name: "download_email_attachment",
+      label: "Download Email Attachment",
+      description: "Download the content of a specific email attachment as base64-encoded data. Use get_email_attachments first to get the attachmentId.",
+      parameters: Type.Object({
+        userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
+        messageId: Type.String({ description: "The message ID" }),
+        attachmentId: Type.String({ description: "The attachment ID (from get_email_attachments)" }),
+      }),
+      execute: async (_toolCallId, params) => downloadEmailAttachment(cfg, params as Parameters<typeof downloadEmailAttachment>[1]),
     },
     {
       name: "get_mail_folders",
