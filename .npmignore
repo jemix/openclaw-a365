@@ -1,0 +1,42 @@
+# Source files (only dist/ is needed at runtime)
+src/
+scripts/
+*.ts
+!*.d.ts
+tsconfig.json
+
+# Build artifacts
+*.tgz
+
+# Dev/test files
+*.test.*
+*.spec.*
+*.bak
+.env*
+
+# Git/IDE
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Docs (SDK bug reports etc.)
+docs/sdk-bug-*.md
+
+# Node dev
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+
+# A365 workflow files
+a365.config.json
+a365.generated.config.json
+manifest/
+*.code-workspace
+
+# Data volumes
+data/
