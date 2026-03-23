@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { Type, type TSchema } from "@sinclair/typebox";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { A365Config, GraphCalendarEvent, GraphMailMessage, GraphMailFolder } from "./types.js";
@@ -58,6 +60,12 @@ export type GraphToolContext = {
   currentUserRole?: "Owner" | "Requester";
   /** Callback to send an activity directly to the conversation (e.g. GIF attachments) */
   sendActivity?: (activity: unknown) => Promise<{ id?: string }>;
+  /**
+   * Per-account A365 config for multi-instance support.
+   * When set, graphRequest uses this instead of the factory-captured config,
+   * allowing different accounts to use different credentials/identities.
+   */
+  accountCfg?: A365Config;
 };
 
 /**
@@ -111,16 +119,18 @@ async function graphRequest<T>(
   // Get the username for token acquisition
   // Use agent username from context (thread-safe) or config
   const toolContext = getGraphToolContext();
+  // Prefer per-account config from context (multi-instance) over factory-captured config
+  const effectiveCfg = toolContext?.accountCfg ?? cfg;
   const agentIdentity =
     toolContext?.agentIdentity ||
-    cfg?.agentIdentity ||
-    cfg?.owner;
+    effectiveCfg?.agentIdentity ||
+    effectiveCfg?.owner;
 
   if (!agentIdentity) {
     return { ok: false, error: "Agent username not configured. Set agentIdentity or owner in config." };
   }
 
-  const token = await getGraphToken(cfg, agentIdentity);
+  const token = await getGraphToken(effectiveCfg, agentIdentity);
   if (!token) {
     return { ok: false, error: "Graph API token not available. Check T1/T2/User flow configuration (blueprintClientAppId, blueprintClientSecret, aaInstanceId)." };
   }
@@ -219,7 +229,7 @@ async function resolveMailFolderByName(
   const path = `/users/${encodeURIComponent(userId)}/mailFolders?$top=100&$select=id,displayName,childFolderCount&includeHiddenFolders=true`;
   const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
   if (!result.ok) {
-    return { ok: false, error: `Failed to list folders: ${result.error}` };
+    return { ok: false, error: `Failed to list folders: ${getError(result)}` };
   }
 
   // Case-insensitive match on displayName at top level
@@ -298,6 +308,22 @@ function validateEmails(emails: string[], fieldName: string): { ok: true } | { o
 
 type ToolResult = AgentToolResult<unknown>;
 
+/** Extract error message from a failed result (graphRequest, validate, or resolve). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getError(result: any): string {
+  return result?.error ?? "Unknown error";
+}
+
+/** Create an error ToolResult. */
+function errorResult(msg: string): ToolResult {
+  return { details: {}, content: [{ type: "text", text: msg }] };
+}
+
+/** Create a success ToolResult. */
+function successResult(data: unknown): ToolResult {
+  return { details: {}, content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };
+}
+
 // --- GIF dedup ring buffer (module-level, in-memory) ---
 const RECENT_GIF_MAX = 20;
 const recentGifIds: number[] = [];
@@ -328,12 +354,12 @@ async function sendGif(
   const log = getLogger();
   const klipyKey = cfg?.klipyApiKey || process.env.KLIPY_API_KEY;
   if (!klipyKey) {
-    return { isError: true, content: [{ type: "text", text: "Klipy API key not configured. Set KLIPY_API_KEY env var or klipyApiKey in config." }] };
+    return { details: {}, content: [{ type: "text", text: "Klipy API key not configured. Set KLIPY_API_KEY env var or klipyApiKey in config." }] };
   }
 
   const ctx = getGraphToolContext();
   if (!ctx?.sendActivity) {
-    return { isError: true, content: [{ type: "text", text: "Cannot send GIF: sendActivity not available in current context." }] };
+    return { details: {}, content: [{ type: "text", text: "Cannot send GIF: sendActivity not available in current context." }] };
   }
 
   const { query } = params;
@@ -343,13 +369,13 @@ async function sendGif(
     const resp = await fetch(url);
     if (!resp.ok) {
       log.warn("Klipy API error", { status: resp.status });
-      return { isError: true, content: [{ type: "text", text: `Klipy API error: ${resp.status}` }] };
+      return { details: {}, content: [{ type: "text", text: `Klipy API error: ${resp.status}` }] };
     }
 
     const json = await resp.json() as { data?: { data?: Array<{ id: number; title?: string; slug?: string; file?: { hd?: { gif?: { url?: string } } } }> } };
     const results = json.data?.data;
     if (!results || results.length === 0) {
-      return { content: [{ type: "text", text: JSON.stringify({ sent: false, reason: "No GIFs found for that query." }) }] };
+      return { details: {}, content: [{ type: "text", text: JSON.stringify({ sent: false, reason: "No GIFs found for that query." }) }] };
     }
 
     // Filter out recently-used GIFs
@@ -360,7 +386,7 @@ async function sendGif(
     const pick = pool[Math.floor(Math.random() * pool.length)];
     const gifUrl = pick.file?.hd?.gif?.url;
     if (!gifUrl) {
-      return { isError: true, content: [{ type: "text", text: "Selected GIF has no HD URL available." }] };
+      return { details: {}, content: [{ type: "text", text: "Selected GIF has no HD URL available." }] };
     }
 
     // Send the GIF as an inline attachment via the turn context
@@ -379,11 +405,12 @@ async function sendGif(
     log.debug("GIF sent", { id: pick.id, title: pick.title, query });
 
     return {
+      details: {},
       content: [{ type: "text", text: JSON.stringify({ sent: true, title: pick.title || pick.slug || "GIF", query }) }],
     };
   } catch (err) {
     log.error("sendGif failed", { error: String(err) });
-    return { isError: true, content: [{ type: "text", text: `Failed to send GIF: ${String(err)}` }] };
+    return { details: {}, content: [{ type: "text", text: `Failed to send GIF: ${String(err)}` }] };
   }
 }
 
@@ -398,24 +425,19 @@ async function getCalendarEvents(
 
   // Validate inputs
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   const startCheck = validateIsoDateTime(startDate, "startDate");
-  if (!startCheck.ok) return { isError: true, content: [{ type: "text", text: startCheck.error }] };
+  if (!startCheck.ok) return errorResult(getError(startCheck));
 
   const endCheck = validateIsoDateTime(endDate, "endDate");
-  if (!endCheck.ok) return { isError: true, content: [{ type: "text", text: endCheck.error }] };
+  if (!endCheck.ok) return errorResult(getError(endCheck));
 
   const path = `/users/${encodeURIComponent(userId)}/calendar/calendarView?startDateTime=${encodeURIComponent(startDate)}&endDateTime=${encodeURIComponent(endDate)}&$orderby=start/dateTime&$top=50`;
 
   const result = await graphRequest<{ value: GraphCalendarEvent[] }>(cfg, "GET", path);
 
-  if (!result.ok) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: result.error }],
-    };
-  }
+  if (!result.ok) return errorResult(getError(result));
 
   const events = result.data.value.map((event) => ({
     id: event.id,
@@ -435,6 +457,7 @@ async function getCalendarEvents(
   }));
 
   return {
+    details: {},
     content: [
       {
         type: "text",
@@ -476,17 +499,17 @@ async function createCalendarEvent(
 
   // Validate inputs
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   const startCheck = validateIsoDateTime(startDateTime, "startDateTime");
-  if (!startCheck.ok) return { isError: true, content: [{ type: "text", text: startCheck.error }] };
+  if (!startCheck.ok) return errorResult(getError(startCheck));
 
   const endCheck = validateIsoDateTime(endDateTime, "endDateTime");
-  if (!endCheck.ok) return { isError: true, content: [{ type: "text", text: endCheck.error }] };
+  if (!endCheck.ok) return errorResult(getError(endCheck));
 
   if (attendees.length > 0) {
     const emailsCheck = validateEmails(attendees, "attendees");
-    if (!emailsCheck.ok) return { isError: true, content: [{ type: "text", text: emailsCheck.error }] };
+    if (!emailsCheck.ok) return errorResult(getError(emailsCheck));
   }
 
   const path = `/users/${encodeURIComponent(userId)}/calendar/events`;
@@ -515,14 +538,10 @@ async function createCalendarEvent(
 
   const result = await graphRequest<GraphCalendarEvent>(cfg, "POST", path, eventBody);
 
-  if (!result.ok) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: result.error }],
-    };
-  }
+  if (!result.ok) return errorResult(getError(result));
 
   return {
+    details: {},
     content: [
       {
         type: "text",
@@ -566,7 +585,7 @@ async function updateCalendarEvent(
 
   if (attendees && attendees.length > 0) {
     const emailsCheck = validateEmails(attendees, "attendees");
-    if (!emailsCheck.ok) return { isError: true, content: [{ type: "text", text: emailsCheck.error }] };
+    if (!emailsCheck.ok) return errorResult(getError(emailsCheck));
   }
 
   const path = `/users/${encodeURIComponent(userId)}/calendar/events${graphId(eventId)}`;
@@ -600,14 +619,10 @@ async function updateCalendarEvent(
 
   const result = await graphRequest<GraphCalendarEvent>(cfg, "PATCH", path, eventBody);
 
-  if (!result.ok) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: result.error }],
-    };
-  }
+  if (!result.ok) return errorResult(getError(result));
 
   return {
+    details: {},
     content: [
       {
         type: "text",
@@ -640,14 +655,10 @@ async function deleteCalendarEvent(
 
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
-  if (!result.ok) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: result.error }],
-    };
-  }
+  if (!result.ok) return errorResult(getError(result));
 
   return {
+    details: {},
     content: [
       {
         type: "text",
@@ -676,23 +687,23 @@ async function sendEmail(
 
   // Validate inputs
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (to.length === 0) {
-    return { isError: true, content: [{ type: "text", text: "At least one recipient is required in 'to' field" }] };
+    return { details: {}, content: [{ type: "text", text: "At least one recipient is required in 'to' field" }] };
   }
 
   const toCheck = validateEmails(to, "to");
-  if (!toCheck.ok) return { isError: true, content: [{ type: "text", text: toCheck.error }] };
+  if (!toCheck.ok) return errorResult(getError(toCheck));
 
   if (cc.length > 0) {
     const ccCheck = validateEmails(cc, "cc");
-    if (!ccCheck.ok) return { isError: true, content: [{ type: "text", text: ccCheck.error }] };
+    if (!ccCheck.ok) return errorResult(getError(ccCheck));
   }
 
   if (bcc.length > 0) {
     const bccCheck = validateEmails(bcc, "bcc");
-    if (!bccCheck.ok) return { isError: true, content: [{ type: "text", text: bccCheck.error }] };
+    if (!bccCheck.ok) return errorResult(getError(bccCheck));
   }
 
   const path = `/users/${encodeURIComponent(userId)}/sendMail`;
@@ -714,14 +725,10 @@ async function sendEmail(
 
   const result = await graphRequest<unknown>(cfg, "POST", path, mailBody);
 
-  if (!result.ok) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: result.error }],
-    };
-  }
+  if (!result.ok) return errorResult(getError(result));
 
   return {
+    details: {},
     content: [
       {
         type: "text",
@@ -759,14 +766,10 @@ async function getUserInfo(
     officeLocation?: string;
   }>(cfg, "GET", path);
 
-  if (!result.ok) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: result.error }],
-    };
-  }
+  if (!result.ok) return errorResult(getError(result));
 
   return {
+    details: {},
     content: [
       {
         type: "text",
@@ -839,12 +842,7 @@ async function findMeetingTimes(
     emptySuggestionsReason?: string;
   }>(cfg, "POST", path, body);
 
-  if (!result.ok) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: result.error }],
-    };
-  }
+  if (!result.ok) return errorResult(getError(result));
 
   const suggestions = result.data.meetingTimeSuggestions.map((s) => ({
     start: s.meetingTimeSlot.start,
@@ -859,6 +857,7 @@ async function findMeetingTimes(
   }));
 
   return {
+    details: {},
     content: [
       {
         type: "text",
@@ -886,11 +885,11 @@ async function getEmails(
   const { userId, folderName = "inbox", top = 10, filter, orderBy } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   // Resolve folder name → ID internally
   const resolved = await resolveMailFolderByName(cfg, userId, folderName);
-  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+  if (!resolved.ok) return errorResult(getError(resolved));
 
   const clampedTop = Math.min(Math.max(top, 1), 50);
   let path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}/messages?$top=${clampedTop}&$select=id,subject,bodyPreview,from,receivedDateTime,isRead,hasAttachments,importance,flag`;
@@ -908,7 +907,7 @@ async function getEmails(
   const result = await graphRequest<{ value: GraphMailMessage[] }>(cfg, "GET", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   const messages = result.data.value.map((msg) => ({
@@ -924,6 +923,7 @@ async function getEmails(
   }));
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ messages, count: messages.length }, null, 2) }],
   };
 }
@@ -938,10 +938,10 @@ async function readEmail(
   const { userId, messageId } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!messageId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "messageId is required" }] };
   }
 
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}?$select=id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,hasAttachments,importance,flag,conversationId`;
@@ -949,11 +949,12 @@ async function readEmail(
   const result = await graphRequest<GraphMailMessage>(cfg, "GET", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   const msg = result.data;
   return {
+    details: {},
     content: [{
       type: "text",
       text: JSON.stringify({
@@ -985,10 +986,10 @@ async function searchEmails(
   const { userId, query, top = 10 } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!query?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "query is required" }] };
+    return { details: {}, content: [{ type: "text", text: "query is required" }] };
   }
 
   const clampedTop = Math.min(Math.max(top, 1), 50);
@@ -997,7 +998,7 @@ async function searchEmails(
   const result = await graphRequest<{ value: GraphMailMessage[] }>(cfg, "GET", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   const messages = result.data.value.map((msg) => ({
@@ -1012,6 +1013,7 @@ async function searchEmails(
   }));
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ messages, count: messages.length, query }, null, 2) }],
   };
 }
@@ -1026,27 +1028,28 @@ async function moveEmail(
   const { userId, messageId, destinationFolderName } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!messageId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "messageId is required" }] };
   }
   if (!destinationFolderName?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "destinationFolderName is required" }] };
+    return { details: {}, content: [{ type: "text", text: "destinationFolderName is required" }] };
   }
 
   // Resolve destination folder name → ID internally
   const resolved = await resolveMailFolderByName(cfg, userId, destinationFolderName);
-  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+  if (!resolved.ok) return errorResult(getError(resolved));
 
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/move`;
   const result = await graphRequest<GraphMailMessage>(cfg, "POST", path, { destinationId: resolved.folderId });
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ success: true, newMessageId: result.data.id }, null, 2) }],
   };
 }
@@ -1061,20 +1064,21 @@ async function deleteEmail(
   const { userId, messageId } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!messageId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "messageId is required" }] };
   }
 
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}`;
   const result = await graphRequest<unknown>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ success: true, deleted: messageId }, null, 2) }],
   };
 }
@@ -1089,20 +1093,21 @@ async function markEmailRead(
   const { userId, messageId, isRead } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!messageId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "messageId is required" }] };
   }
 
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}`;
   const result = await graphRequest<GraphMailMessage>(cfg, "PATCH", path, { isRead });
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ success: true, messageId, isRead }, null, 2) }],
   };
 }
@@ -1117,18 +1122,18 @@ async function forwardEmail(
   const { userId, messageId, to, comment = "" } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!messageId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "messageId is required" }] };
   }
 
   if (to.length === 0) {
-    return { isError: true, content: [{ type: "text", text: "At least one recipient is required in 'to' field" }] };
+    return { details: {}, content: [{ type: "text", text: "At least one recipient is required in 'to' field" }] };
   }
 
   const toCheck = validateEmails(to, "to");
-  if (!toCheck.ok) return { isError: true, content: [{ type: "text", text: toCheck.error }] };
+  if (!toCheck.ok) return errorResult(getError(toCheck));
 
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/forward`;
 
@@ -1140,10 +1145,11 @@ async function forwardEmail(
   const result = await graphRequest<unknown>(cfg, "POST", path, body);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{
       type: "text",
       text: JSON.stringify({ success: true, message: `Email forwarded to ${to.join(", ")}` }, null, 2),
@@ -1161,10 +1167,10 @@ async function getEmailAttachments(
   const { userId, messageId } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!messageId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "messageId is required" }] };
   }
 
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/attachments?$select=id,name,contentType,size,isInline`;
@@ -1172,7 +1178,7 @@ async function getEmailAttachments(
   const result = await graphRequest<{ value: Array<{ id: string; name: string; contentType: string; size: number; isInline: boolean; contentBytes?: string }> }>(cfg, "GET", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   const attachments = result.data.value.map((a) => ({
@@ -1184,6 +1190,7 @@ async function getEmailAttachments(
   }));
 
   return {
+    details: {},
     content: [{
       type: "text",
       text: JSON.stringify({ attachments, count: attachments.length }, null, 2),
@@ -1192,22 +1199,26 @@ async function getEmailAttachments(
 }
 
 /**
- * Download the content of a specific email attachment as base64.
+ * Download an email attachment to disk and return the local file path.
+ * Files are saved to /tmp/openclaw/attachments/ for downstream processing
+ * (e.g. pdftotext, image analysis). This avoids Base64 truncation issues
+ * that occur when passing large attachments through the LLM context.
  */
 async function downloadEmailAttachment(
   cfg: A365Config | undefined,
   params: { userId: string; messageId: string; attachmentId: string },
 ): Promise<ToolResult> {
+  const log = getLogger();
   const { userId, messageId, attachmentId } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!messageId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "messageId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "messageId is required" }] };
   }
   if (!attachmentId?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "attachmentId is required" }] };
+    return { details: {}, content: [{ type: "text", text: "attachmentId is required" }] };
   }
 
   const path = `/users/${encodeURIComponent(userId)}/messages${graphId(messageId)}/attachments/${encodeURIComponent(attachmentId)}`;
@@ -1215,19 +1226,47 @@ async function downloadEmailAttachment(
   const result = await graphRequest<{ id: string; name: string; contentType: string; size: number; contentBytes: string }>(cfg, "GET", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   const a = result.data;
+
+  if (!a.contentBytes) {
+    return { details: {}, content: [{ type: "text", text: `Attachment "${a.name}" has no content bytes (may be a reference attachment or item attachment).` }] };
+  }
+
+  // Write to disk instead of returning Base64 in JSON
+  const outDir = "/tmp/openclaw/attachments";
+  try {
+    await mkdir(outDir, { recursive: true });
+  } catch {
+    // ignore if already exists
+  }
+
+  // Sanitize filename: remove path separators, limit length
+  const safeName = (a.name || "attachment").replace(/[/\\:*?"<>|]/g, "_").slice(0, 200);
+  // Use short messageId prefix to avoid collisions
+  const prefix = messageId.slice(0, 12).replace(/[^a-zA-Z0-9]/g, "");
+  const filePath = join(outDir, `${prefix}_${safeName}`);
+
+  try {
+    const buffer = Buffer.from(a.contentBytes, "base64");
+    await writeFile(filePath, buffer);
+    log.info("Attachment saved to disk", { name: a.name, path: filePath, sizeBytes: buffer.length });
+  } catch (err) {
+    log.error("Failed to write attachment to disk", { error: String(err) });
+    return { details: {}, content: [{ type: "text", text: `Failed to save attachment to disk: ${String(err)}` }] };
+  }
+
   return {
+    details: {},
     content: [{
       type: "text",
       text: JSON.stringify({
-        id: a.id,
         name: a.name,
         contentType: a.contentType,
         sizeBytes: a.size,
-        contentBase64: a.contentBytes,
+        filePath,
       }, null, 2),
     }],
   };
@@ -1243,12 +1282,12 @@ async function getMailFolders(
   const { userId, parentFolderName } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   let basePath: string;
   if (parentFolderName) {
     const resolved = await resolveMailFolderByName(cfg, userId, parentFolderName);
-    if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+    if (!resolved.ok) return errorResult(getError(resolved));
     basePath = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}/childFolders`;
   } else {
     basePath = `/users/${encodeURIComponent(userId)}/mailFolders`;
@@ -1258,7 +1297,7 @@ async function getMailFolders(
   const result = await graphRequest<{ value: GraphMailFolder[] }>(cfg, "GET", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   const folders = result.data.value.map((f) => ({
@@ -1269,6 +1308,7 @@ async function getMailFolders(
   }));
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ folders, count: folders.length, parentFolder: parentFolderName ?? "root" }, null, 2) }],
   };
 }
@@ -1280,12 +1320,12 @@ async function createMailFolder(
   const { userId, displayName, parentFolderName } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   let basePath: string;
   if (parentFolderName) {
     const resolved = await resolveMailFolderByName(cfg, userId, parentFolderName);
-    if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+    if (!resolved.ok) return errorResult(getError(resolved));
     basePath = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}/childFolders`;
   } else {
     basePath = `/users/${encodeURIComponent(userId)}/mailFolders`;
@@ -1294,10 +1334,11 @@ async function createMailFolder(
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", basePath, { displayName });
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ created: true, displayName: result.data.displayName }, null, 2) }],
   };
 }
@@ -1309,20 +1350,21 @@ async function renameMailFolder(
   const { userId, folderName, newName } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   // Resolve folder name → ID internally (bypasses LLM ID corruption)
   const resolved = await resolveMailFolderByName(cfg, userId, folderName);
-  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+  if (!resolved.ok) return errorResult(getError(resolved));
 
   const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}`;
   const result = await graphRequest<GraphMailFolder>(cfg, "PATCH", path, { displayName: newName });
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ renamed: true, oldName: folderName, newName: result.data.displayName }, null, 2) }],
   };
 }
@@ -1334,24 +1376,25 @@ async function deleteMailFolder(
   const { userId, folderName } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!folderName?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "folderName is required" }] };
+    return { details: {}, content: [{ type: "text", text: "folderName is required" }] };
   }
 
   // Resolve folder name → ID internally (bypasses LLM ID corruption)
   const resolved = await resolveMailFolderByName(cfg, userId, folderName);
-  if (!resolved.ok) return { isError: true, content: [{ type: "text", text: resolved.error }] };
+  if (!resolved.ok) return errorResult(getError(resolved));
 
   const path = `/users/${encodeURIComponent(userId)}/mailFolders${graphId(resolved.folderId)}`;
   const result = await graphRequest<Record<string, never>>(cfg, "DELETE", path);
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ deleted: true, folderName }, null, 2) }],
   };
 }
@@ -1363,31 +1406,32 @@ async function moveMailFolder(
   const { userId, folderName, destinationName } = params;
 
   const userIdCheck = validateUserId(userId);
-  if (!userIdCheck.ok) return { isError: true, content: [{ type: "text", text: userIdCheck.error }] };
+  if (!userIdCheck.ok) return errorResult(getError(userIdCheck));
 
   if (!folderName?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "folderName is required" }] };
+    return { details: {}, content: [{ type: "text", text: "folderName is required" }] };
   }
   if (!destinationName?.trim()) {
-    return { isError: true, content: [{ type: "text", text: "destinationName is required" }] };
+    return { details: {}, content: [{ type: "text", text: "destinationName is required" }] };
   }
 
   // Resolve both folder names → IDs internally (bypasses LLM ID corruption)
   const sourceResolved = await resolveMailFolderByName(cfg, userId, folderName);
-  if (!sourceResolved.ok) return { isError: true, content: [{ type: "text", text: `Source: ${sourceResolved.error}` }] };
+  if (!sourceResolved.ok) return errorResult(`Source: ${getError(sourceResolved)}`);
 
   const destResolved = await resolveMailFolderByName(cfg, userId, destinationName);
-  if (!destResolved.ok) return { isError: true, content: [{ type: "text", text: `Destination: ${destResolved.error}` }] };
+  if (!destResolved.ok) return errorResult(`Destination: ${getError(destResolved)}`);
 
   const userPath = `/users/${encodeURIComponent(userId)}`;
   const movePath = `${userPath}/mailFolders${graphId(sourceResolved.folderId)}/move`;
   const result = await graphRequest<GraphMailFolder>(cfg, "POST", movePath, { destinationId: destResolved.folderId });
 
   if (!result.ok) {
-    return { isError: true, content: [{ type: "text", text: result.error }] };
+    return errorResult(getError(result));
   }
 
   return {
+    details: {},
     content: [{ type: "text", text: JSON.stringify({ moved: true, folderName, destination: destinationName, newDisplayName: result.data.displayName }, null, 2) }],
   };
 }
@@ -1631,7 +1675,7 @@ export function createGraphTools(cfg?: A365Config): AgentTool<TSchema, unknown>[
     {
       name: "download_email_attachment",
       label: "Download Email Attachment",
-      description: "Download the content of a specific email attachment as base64-encoded data. Use get_email_attachments first to get the attachmentId.",
+      description: "Download a specific email attachment to disk and return the local file path. Use get_email_attachments first to get the attachmentId. The file is saved to /tmp/openclaw/attachments/ and the path is returned so you can process it further (e.g. with pdftotext, pdf tool, or image tool).",
       parameters: Type.Object({
         userId: Type.String({ description: "User email or ID whose mailbox contains the message" }),
         messageId: Type.String({ description: "The message ID" }),

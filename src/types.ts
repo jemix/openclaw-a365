@@ -1,7 +1,9 @@
 /**
- * A365 channel configuration schema.
+ * Per-account configuration fields for multi-instance A365.
+ * Each account represents a distinct M365 Agentic User with its own
+ * credentials, identity, and policy settings.
  */
-export type A365Config = {
+export type A365AccountConfig = {
   enabled?: boolean;
   /** Bot Framework App ID */
   appId?: string;
@@ -9,11 +11,6 @@ export type A365Config = {
   appPassword?: string;
   /** Azure AD Tenant ID */
   tenantId?: string;
-  /** Webhook configuration */
-  webhook?: {
-    /** Port for the Bot Framework webhook server (default: 3978) */
-    port?: number;
-  };
   /** Graph API configuration for T1/T2/User flow (Federated Identity Credentials) */
   graph?: {
     /** Blueprint Client App ID (typically same as Bot App ID) */
@@ -62,6 +59,28 @@ export type A365Config = {
   groupPolicy?: string;
   /** Klipy API key for GIF search (https://partner.klipy.com/api-keys) */
   klipyApiKey?: string;
+};
+
+/**
+ * A365 channel configuration schema.
+ *
+ * Supports two modes:
+ * 1. **Single-account (flat):** All fields at the top level (backward compatible).
+ * 2. **Multi-account:** `accounts` map keyed by account ID, each containing
+ *    per-account overrides. Top-level fields serve as defaults.
+ */
+export type A365Config = A365AccountConfig & {
+  /** Webhook configuration (shared across all accounts) */
+  webhook?: {
+    /** Port for the Bot Framework webhook server (default: 3978) */
+    port?: number;
+  };
+  /**
+   * Named accounts for multi-instance support.
+   * Each key is an account ID, each value overrides the top-level defaults.
+   * When absent, the flat config is treated as a single default account.
+   */
+  accounts?: Record<string, A365AccountConfig>;
 };
 
 /**

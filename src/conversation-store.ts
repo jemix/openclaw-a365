@@ -23,8 +23,15 @@ export type StoredConversationReference = {
   locale?: string;
 };
 
+type ConversationStoreEntry = {
+  ref: StoredConversationReference;
+  updatedAt: number;
+  userAadId?: string;
+  accountId?: string;
+};
+
 type ConversationStore = {
-  references: Record<string, { ref: StoredConversationReference; updatedAt: number; userAadId?: string }>;
+  references: Record<string, ConversationStoreEntry>;
 };
 
 const STORE_DIR = join(homedir(), ".openclaw");
@@ -56,10 +63,11 @@ async function saveStore(store: ConversationStore): Promise<void> {
 export async function saveConversationReference(
   ref: StoredConversationReference,
   userAadId?: string,
+  accountId?: string,
 ): Promise<void> {
   const store = await loadStore();
   const key = ref.conversation.id;
-  store.references[key] = { ref, updatedAt: Date.now(), userAadId };
+  store.references[key] = { ref, updatedAt: Date.now(), userAadId, accountId };
   await saveStore(store);
 }
 
@@ -90,16 +98,53 @@ export async function getConversationReferenceByUser(
 }
 
 /**
+ * Get the accountId associated with a conversation.
+ */
+export async function getAccountIdForConversation(
+  conversationId: string,
+): Promise<string | undefined> {
+  const store = await loadStore();
+  return store.references[conversationId]?.accountId;
+}
+
+/**
+ * Get the full store entry for a conversation (includes accountId, userAadId, etc.).
+ */
+export async function getConversationEntry(
+  conversationId: string,
+): Promise<ConversationStoreEntry | undefined> {
+  const store = await loadStore();
+  return store.references[conversationId];
+}
+
+/**
+ * Get the full store entry by user AAD ID (most recent conversation).
+ */
+export async function getConversationEntryByUser(
+  userAadId: string,
+): Promise<ConversationStoreEntry | undefined> {
+  const store = await loadStore();
+  let best: ConversationStoreEntry | undefined;
+  for (const entry of Object.values(store.references)) {
+    if (entry.userAadId === userAadId && (!best || entry.updatedAt > best.updatedAt)) {
+      best = entry;
+    }
+  }
+  return best;
+}
+
+/**
  * List all stored conversation references.
  */
 export async function listConversationReferences(): Promise<
-  Array<{ conversationId: string; updatedAt: number; userAadId?: string }>
+  Array<{ conversationId: string; updatedAt: number; userAadId?: string; accountId?: string }>
 > {
   const store = await loadStore();
   return Object.entries(store.references).map(([id, entry]) => ({
     conversationId: id,
     updatedAt: entry.updatedAt,
     userAadId: entry.userAadId,
+    accountId: entry.accountId,
   }));
 }
 

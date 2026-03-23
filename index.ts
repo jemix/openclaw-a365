@@ -15,7 +15,8 @@ export {
   listConversationReferences,
   clearConversationReferences,
 } from "./src/conversation-store.js";
-export type { A365Config, A365MessageMetadata, GraphCalendarEvent } from "./src/types.js";
+export type { A365Config, A365AccountConfig, A365MessageMetadata, GraphCalendarEvent } from "./src/types.js";
+export { resolveAccountA365Config } from "./src/channel.js";
 
 const plugin = {
   id: "a365",

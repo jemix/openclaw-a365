@@ -1,21 +1,34 @@
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
 import type { A365Config, A365MessageMetadata } from "./types.js";
 import { getA365Runtime } from "./runtime.js";
-import { getAdapter, getBlueprintClientId } from "./adapter-store.js";
+import {
+  getAdapter,
+  getBlueprintClientId,
+  getAdapterForAccount,
+  getAdapterByRecipientId,
+} from "./adapter-store.js";
 import {
   getConversationReference,
   getConversationReferenceByUser,
+  getAccountIdForConversation,
+  getConversationEntryByUser,
   type StoredConversationReference,
 } from "./conversation-store.js";
+
+type ResolvedReference = {
+  ref: StoredConversationReference;
+  accountId?: string;
+};
 
 /**
  * Resolve a stored conversation reference from the provided params.
  * Tries conversationId lookup first, then falls back to userAadId lookup.
+ * Returns the reference and its associated accountId (if stored).
  */
 async function resolveStoredReference(
   to: string | undefined,
   metadata: A365MessageMetadata | undefined,
-): Promise<StoredConversationReference | undefined> {
+): Promise<ResolvedReference | undefined> {
   const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
 
   const conversationId = to || metadata?.conversationId;
@@ -23,25 +36,33 @@ async function resolveStoredReference(
 
   log.info(`Looking up stored conversation reference for: ${conversationId}`);
   let ref = await getConversationReference(conversationId);
+  let accountId = ref ? await getAccountIdForConversation(conversationId) : undefined;
 
   // If direct lookup fails and it looks like a userAadId (UUID without colons/@),
   // try looking up by userAadId as a fallback
   if (!ref && !conversationId.includes(":") && !conversationId.includes("@")) {
     log.info(`Direct lookup failed, trying userAadId lookup for ${conversationId}`);
     ref = await getConversationReferenceByUser(conversationId);
+    if (ref) {
+      const entry = await getConversationEntryByUser(conversationId);
+      accountId = entry?.accountId;
+    }
   }
 
   if (ref) {
-    log.info(`Found stored reference: conversationId=${ref.conversation?.id}`);
-  } else {
-    log.warn(`No stored reference found for: ${conversationId}`);
+    log.info(`Found stored reference: conversationId=${ref.conversation?.id}, accountId=${accountId ?? "default"}`);
+    return { ref, accountId };
   }
 
-  return ref;
+  log.warn(`No stored reference found for: ${conversationId}`);
+  return undefined;
 }
 
 /**
  * Send a proactive message using the SDK's adapter.continueConversation().
+ *
+ * Multi-account: resolves the correct adapter by accountId (from conversation-store)
+ * or by ref.agent.id (recipientId). Falls back to the default adapter.
  *
  * Per the SDK author, two things are required:
  * 1. The ConversationReference must come from an AU-based (agentic user) inbound request
@@ -52,17 +73,50 @@ async function resolveStoredReference(
  */
 async function sendViaAdapter(params: {
   ref: StoredConversationReference;
+  accountId?: string;
   sendFn: (context: { sendActivity: (activity: unknown) => Promise<{ id?: string }> }) => Promise<{ id?: string }>;
 }): Promise<{ id?: string }> {
-  const { ref, sendFn } = params;
+  const { ref, accountId, sendFn } = params;
   const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
 
-  const adapter = getAdapter();
+  // Try to resolve the correct adapter:
+  // 1. By accountId from conversation-store
+  // 2. By ref.agent.id (recipientId) from adapter-store
+  // 3. Fall back to default adapter
+  let adapter: import("@microsoft/agents-hosting").CloudAdapter | null = null;
+  let blueprintClientId: string | null = null;
+
+  if (accountId) {
+    const entry = getAdapterForAccount(accountId);
+    if (entry) {
+      adapter = entry.adapter;
+      blueprintClientId = entry.blueprintClientId;
+      log.debug("resolved adapter by accountId", { accountId });
+    }
+  }
+
+  if (!adapter && ref.agent) {
+    const agentId = (ref.agent as Record<string, unknown>).id as string | undefined;
+    if (agentId) {
+      const entry = getAdapterByRecipientId(agentId);
+      if (entry) {
+        adapter = entry.adapter;
+        blueprintClientId = entry.blueprintClientId;
+        log.debug("resolved adapter by agent.id", { agentId });
+      }
+    }
+  }
+
+  if (!adapter) {
+    adapter = getAdapter();
+    blueprintClientId = getBlueprintClientId();
+    log.debug("using default adapter");
+  }
+
   if (!adapter) {
     throw new Error("CloudAdapter not initialized. Bot must receive at least one message first.");
   }
 
-  const blueprintClientId = getBlueprintClientId();
   if (!blueprintClientId) {
     throw new Error("Blueprint Client App ID not configured.");
   }
@@ -71,6 +125,7 @@ async function sendViaAdapter(params: {
     blueprintClientId,
     conversationId: ref.conversation?.id,
     agentRole: (ref.agent as Record<string, unknown>)?.role,
+    accountId: accountId ?? "default",
   });
 
   let result: { id?: string } = {};
@@ -97,14 +152,15 @@ export async function sendMessageA365(params: {
 
   log.info(`sendMessageA365 called: to=${to} hasMetadata=${!!metadata}`);
 
-  const ref = await resolveStoredReference(to, metadata);
-  if (!ref) {
+  const resolved = await resolveStoredReference(to, metadata);
+  if (!resolved) {
     return { ok: false, error: "No stored conversation reference. User must message the bot first." };
   }
 
   try {
     const result = await sendViaAdapter({
-      ref,
+      ref: resolved.ref,
+      accountId: resolved.accountId,
       sendFn: async (context) => {
         const res = await context.sendActivity({ type: "message", text });
         return { id: res?.id };
@@ -115,7 +171,7 @@ export async function sendMessageA365(params: {
     return {
       ok: true,
       messageId: result.id,
-      conversationId: ref.conversation?.id,
+      conversationId: resolved.ref.conversation?.id,
     };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -137,14 +193,15 @@ export async function sendAdaptiveCardA365(params: {
   const { to, card, metadata } = params;
   const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
 
-  const ref = await resolveStoredReference(to, metadata);
-  if (!ref) {
+  const resolved = await resolveStoredReference(to, metadata);
+  if (!resolved) {
     return { ok: false, error: "No stored conversation reference. User must message the bot first." };
   }
 
   try {
     const result = await sendViaAdapter({
-      ref,
+      ref: resolved.ref,
+      accountId: resolved.accountId,
       sendFn: async (context) => {
         const res = await context.sendActivity({
           type: "message",
@@ -163,7 +220,7 @@ export async function sendAdaptiveCardA365(params: {
     return {
       ok: true,
       messageId: result.id,
-      conversationId: ref.conversation?.id,
+      conversationId: resolved.ref.conversation?.id,
     };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
