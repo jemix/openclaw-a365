@@ -381,7 +381,10 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
 
   const port = a365Cfg.webhook?.port ?? 3978;
 
-  // Guard: prevent double-start
+  // Guard: prevent double-start.
+  // The gateway calls startAccount() per account — in multi-account mode,
+  // the FIRST call initializes ALL adapters and starts the shared Express server.
+  // Subsequent calls must be no-ops to avoid EADDRINUSE.
   if (a365ServerActive) {
     log.warn(`a365 server already active on port ${port}, skipping duplicate start`);
     await new Promise<void>((resolve) => {
@@ -391,6 +394,9 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
     });
     return { app: null, shutdown: async () => {} };
   }
+  // Claim the slot immediately to prevent race conditions between
+  // concurrent startAccount() calls.
+  a365ServerActive = true;
 
   // Determine accounts to initialize
   const accounts = a365Cfg.accounts;
@@ -465,6 +471,7 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
 
     if (agentApps.length === 0) {
       log.error("no accounts configured with valid credentials");
+      a365ServerActive = false;
       return { app: null, shutdown: async () => {} };
     }
 
@@ -514,8 +521,6 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         uptime: process.uptime(),
       });
     });
-
-    a365ServerActive = true;
 
     // Start listening
     await new Promise<void>((resolve, reject) => {
@@ -590,8 +595,6 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
 
   // Start the server using the Agents SDK
   const { startServer } = await import("@microsoft/agents-hosting-express");
-
-  a365ServerActive = true;
 
   await startServer(agentApp);
 

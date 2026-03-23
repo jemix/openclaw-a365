@@ -298,7 +298,10 @@ export async function monitorA365Provider(opts) {
         },
     };
     const port = a365Cfg.webhook?.port ?? 3978;
-    // Guard: prevent double-start
+    // Guard: prevent double-start.
+    // The gateway calls startAccount() per account — in multi-account mode,
+    // the FIRST call initializes ALL adapters and starts the shared Express server.
+    // Subsequent calls must be no-ops to avoid EADDRINUSE.
     if (a365ServerActive) {
         log.warn(`a365 server already active on port ${port}, skipping duplicate start`);
         await new Promise((resolve) => {
@@ -308,6 +311,9 @@ export async function monitorA365Provider(opts) {
         });
         return { app: null, shutdown: async () => { } };
     }
+    // Claim the slot immediately to prevent race conditions between
+    // concurrent startAccount() calls.
+    a365ServerActive = true;
     // Determine accounts to initialize
     const accounts = a365Cfg.accounts;
     const hasMultiAccounts = accounts && Object.keys(accounts).length > 0;
@@ -362,6 +368,7 @@ export async function monitorA365Provider(opts) {
         }
         if (agentApps.length === 0) {
             log.error("no accounts configured with valid credentials");
+            a365ServerActive = false;
             return { app: null, shutdown: async () => { } };
         }
         // Start custom Express server for multi-adapter routing
@@ -406,7 +413,6 @@ export async function monitorA365Provider(opts) {
                 uptime: process.uptime(),
             });
         });
-        a365ServerActive = true;
         // Start listening
         await new Promise((resolve, reject) => {
             const server = app.listen(port, () => {
@@ -467,7 +473,6 @@ export async function monitorA365Provider(opts) {
     log.info("Stored adapter and blueprint client ID for proactive messaging", { blueprintClientId });
     // Start the server using the Agents SDK
     const { startServer } = await import("@microsoft/agents-hosting-express");
-    a365ServerActive = true;
     await startServer(agentApp);
     log.info(`a365 provider started on port ${port}`);
     const shutdown = async () => {
