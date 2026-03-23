@@ -144,7 +144,7 @@ function registerMessageHandler(agentApp, ActivityTypes, TurnContext, opts) {
                 cfg,
                 channel: "a365",
                 peer: {
-                    kind: isDirectMessage ? "dm" : "group",
+                    kind: isDirectMessage ? "direct" : "group",
                     id: isDirectMessage ? senderId : conversationId,
                 },
             });
@@ -214,6 +214,7 @@ function registerMessageHandler(agentApp, ActivityTypes, TurnContext, opts) {
                     await Promise.all(pendingSends);
                 },
                 getQueuedCounts: () => queuedCounts,
+                markComplete: () => { },
             };
             const replyOptions = {
                 onReplyStart: async () => {

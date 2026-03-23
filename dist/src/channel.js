@@ -1,4 +1,4 @@
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk";
+const DEFAULT_ACCOUNT_ID = "default";
 import { resolveA365Credentials, resolveGraphTokenConfig, resolveTokenCallbackConfig, getGraphToken } from "./token.js";
 import { createGraphTools } from "./graph-tools.js";
 import { a365Outbound, normalizeA365MessagingTarget } from "./outbound.js";

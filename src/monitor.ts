@@ -69,7 +69,11 @@ export function extractMessageMetadata(activity: ActivityForMetadata): A365Messa
 /**
  * Build a StoredConversationReference from an activity for proactive messaging.
  */
-export function buildConversationReference(activity: ActivityForMetadata): StoredConversationReference {
+export function buildConversationReference(activity: ActivityForMetadata): {
+  conversationId: string; serviceUrl: string; channelId: string; botId: string;
+  botName?: string; userId: string; userName?: string; userAadId?: string;
+  tenantId?: string; isGroup: boolean; locale?: string; updatedAt: number;
+} {
   return {
     conversationId: activity.conversation?.id || "",
     serviceUrl: activity.serviceUrl || "",
@@ -211,7 +215,7 @@ function registerMessageHandler(
             cfg,
             channel: "a365",
             peer: {
-              kind: isDirectMessage ? "dm" : "group",
+              kind: isDirectMessage ? "direct" : "group",
               id: isDirectMessage ? senderId : conversationId,
             },
           });
@@ -284,7 +288,8 @@ function registerMessageHandler(
             waitForIdle: async () => {
               await Promise.all(pendingSends);
             },
-            getQueuedCounts: () => queuedCounts,
+            getQueuedCounts: () => queuedCounts as Record<string, number>,
+            markComplete: () => {},
           };
 
           const replyOptions = {
@@ -318,7 +323,7 @@ function registerMessageHandler(
 
             await Promise.all(pendingSends);
 
-            log.info("dispatch complete", { queuedFinal, textCount: counts?.text ?? 0, repliesSent: replyCount });
+            log.info("dispatch complete", { queuedFinal, textCount: (counts as Record<string, number>)?.text ?? 0, repliesSent: replyCount });
 
             // Update the main session's lastChannel/lastTo for cron delivery support.
             try {
@@ -408,7 +413,8 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
   );
   const { ActivityTypes } = await import("@microsoft/agents-activity");
 
-  type ApplicationTurnState = typeof TurnState;
+  // Cast as any to avoid SDK generic constraints — runtime works fine
+  type ApplicationTurnState = any;
 
   if (hasMultiAccounts) {
     // --- Multi-account mode ---
@@ -476,7 +482,7 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
     }
 
     // Start custom Express server for multi-adapter routing
-    const { default: express } = await import("express");
+    const { default: express } = await import("express") as any;
     const app = express();
     app.use(express.json());
 

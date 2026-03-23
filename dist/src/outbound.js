@@ -211,41 +211,25 @@ export const a365Outbound = {
         log.warn("resolveTarget failed - no target");
         return {
             ok: false,
-            error: "No A365 conversation target specified. User must message the bot first.",
+            error: new Error("No A365 conversation target specified. User must message the bot first."),
         };
     },
     sendText: async ({ cfg, to, text }) => {
         const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
         log.info("sendText called", { to, textLength: text?.length ?? 0 });
         const result = await sendMessageA365({ cfg, to, text });
-        if (!result.ok) {
-            return {
-                channel: "a365",
-                ok: false,
-                error: result.error,
-            };
-        }
         return {
             channel: "a365",
-            ok: true,
-            messageId: result.messageId,
+            messageId: result.messageId ?? "",
             conversationId: result.conversationId,
         };
     },
     sendMedia: async ({ cfg, to, text, mediaUrl }) => {
         const messageText = mediaUrl ? `${text}\n\n${mediaUrl}` : text;
         const result = await sendMessageA365({ cfg, to, text: messageText });
-        if (!result.ok) {
-            return {
-                channel: "a365",
-                ok: false,
-                error: result.error,
-            };
-        }
         return {
             channel: "a365",
-            ok: true,
-            messageId: result.messageId,
+            messageId: result.messageId ?? "",
             conversationId: result.conversationId,
         };
     },

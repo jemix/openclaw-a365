@@ -1,5 +1,5 @@
 import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk";
+const DEFAULT_ACCOUNT_ID = "default";
 import type { A365Config, A365AccountConfig, A365Probe, ResolvedA365Account } from "./types.js";
 import { resolveA365Credentials, resolveGraphTokenConfig, resolveTokenCallbackConfig, getGraphToken } from "./token.js";
 import { createGraphTools } from "./graph-tools.js";

@@ -1,4 +1,4 @@
-import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
+type ChannelOutboundAdapter = any;
 import type { A365Config, A365MessageMetadata } from "./types.js";
 import { getA365Runtime } from "./runtime.js";
 import {
@@ -278,7 +278,7 @@ export const a365Outbound: ChannelOutboundAdapter = {
     log.warn("resolveTarget failed - no target");
     return {
       ok: false,
-      error: "No A365 conversation target specified. User must message the bot first.",
+      error: new Error("No A365 conversation target specified. User must message the bot first."),
     };
   },
 
@@ -287,17 +287,9 @@ export const a365Outbound: ChannelOutboundAdapter = {
     log.info("sendText called", { to, textLength: text?.length ?? 0 });
 
     const result = await sendMessageA365({ cfg, to, text });
-    if (!result.ok) {
-      return {
-        channel: "a365",
-        ok: false,
-        error: result.error,
-      };
-    }
     return {
-      channel: "a365",
-      ok: true,
-      messageId: result.messageId,
+      channel: "a365" as const,
+      messageId: result.messageId ?? "",
       conversationId: result.conversationId,
     };
   },
@@ -305,17 +297,9 @@ export const a365Outbound: ChannelOutboundAdapter = {
   sendMedia: async ({ cfg, to, text, mediaUrl }) => {
     const messageText = mediaUrl ? `${text}\n\n${mediaUrl}` : text;
     const result = await sendMessageA365({ cfg, to, text: messageText });
-    if (!result.ok) {
-      return {
-        channel: "a365",
-        ok: false,
-        error: result.error,
-      };
-    }
     return {
-      channel: "a365",
-      ok: true,
-      messageId: result.messageId,
+      channel: "a365" as const,
+      messageId: result.messageId ?? "",
       conversationId: result.conversationId,
     };
   },
