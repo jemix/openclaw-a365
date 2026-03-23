@@ -1,0 +1,20 @@
+import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import { a365Plugin } from "./src/channel.js";
+import { setA365Runtime } from "./src/runtime.js";
+// Re-export monitor for external use
+export { monitorA365Provider } from "./src/monitor.js";
+export { createGraphTools } from "./src/graph-tools.js";
+export { sendMessageA365, sendAdaptiveCardA365 } from "./src/outbound.js";
+export { saveConversationReference, getConversationReference, getConversationReferenceByUser, deleteConversationReference, listConversationReferences, clearConversationReferences, } from "./src/conversation-store.js";
+export { resolveAccountA365Config } from "./src/channel.js";
+const plugin = {
+    id: "a365",
+    name: "Microsoft 365 Agents",
+    description: "A365 channel plugin with native Graph API tools for calendar and email",
+    configSchema: emptyPluginConfigSchema(),
+    register(api) {
+        setA365Runtime(api.runtime);
+        api.registerChannel({ plugin: a365Plugin });
+    },
+};
+export default plugin;
