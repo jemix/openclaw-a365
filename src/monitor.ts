@@ -484,11 +484,28 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
     // Start custom Express server for multi-adapter routing
     const { default: express } = await import("express") as any;
     const app = express();
-    app.use(express.json());
+
+    // IMPORTANT: Do NOT use express.json() globally — CloudAdapter.process()
+    // needs the raw request body stream. We capture the raw body for routing
+    // but keep it available for the adapter.
+    app.use((req: any, _res: any, next: any) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        const raw = Buffer.concat(chunks);
+        req.rawBody = raw;
+        try {
+          req.body = JSON.parse(raw.toString("utf-8"));
+        } catch {
+          req.body = {};
+        }
+        next();
+      });
+    });
 
     // POST /api/messages — route to correct adapter by activity.recipient.id
-    // adapter.process() expects (req, res, logic) where logic is (context) => Promise<void>.
-    // AgentApplication.run(context) is the standard entry point.
+    // adapter.process() needs the raw body stream. We create a fresh readable
+    // stream from the captured rawBody so the adapter can re-read it.
     app.post("/api/messages", (req: any, res: any) => {
       const activity = req.body;
       const recipientId = activity?.recipient?.id;
@@ -497,13 +514,30 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         log.warn("inbound activity missing recipient.id, using first adapter");
       }
 
+      // Create a proxy request that replays the raw body as a stream
+      // so CloudAdapter.process() can read it again.
+      const { Readable } = require("node:stream");
+      const proxyReq = new Readable({
+        read() {
+          this.push(req.rawBody);
+          this.push(null);
+        },
+      });
+      // Copy headers and other properties the adapter needs
+      Object.assign(proxyReq, {
+        headers: req.headers,
+        method: req.method,
+        url: req.url,
+        body: req.body,
+      });
+
       const entry = recipientId ? getAdapterByRecipientId(recipientId) : null;
       if (entry) {
         const accountId = resolveAccountIdByRecipientId(recipientId);
         log.debug("routing activity", { recipientId, accountId });
         const match = agentApps.find((a) => a.accountId === accountId);
         if (match) {
-          entry.adapter.process(req, res, async (context: any) => match.agentApp.run(context));
+          entry.adapter.process(proxyReq, res, async (context: any) => match.agentApp.run(context));
           return;
         }
       }
@@ -513,7 +547,7 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
       log.debug("routing activity to default adapter", { recipientId, accountId: fallback.accountId });
       const fallbackEntry = getAdapterByRecipientId(fallback.appId);
       if (fallbackEntry) {
-        fallbackEntry.adapter.process(req, res, async (context: any) => fallback.agentApp.run(context));
+        fallbackEntry.adapter.process(proxyReq, res, async (context: any) => fallback.agentApp.run(context));
       } else {
         res.status(500).json({ error: "No adapter available" });
       }
