@@ -375,27 +375,14 @@ export async function monitorA365Provider(opts) {
         // Start custom Express server for multi-adapter routing
         const { default: express } = await import("express");
         const app = express();
-        // IMPORTANT: Do NOT use express.json() globally — CloudAdapter.process()
-        // needs the raw request body stream. We capture the raw body for routing
-        // but keep it available for the adapter.
-        app.use((req, _res, next) => {
-            const chunks = [];
-            req.on("data", (chunk) => chunks.push(chunk));
-            req.on("end", () => {
-                const raw = Buffer.concat(chunks);
-                req.rawBody = raw;
-                try {
-                    req.body = JSON.parse(raw.toString("utf-8"));
-                }
-                catch {
-                    req.body = {};
-                }
-                next();
-            });
-        });
-        // POST /api/messages — route to correct adapter by activity.recipient.id
-        // CloudAdapter.process() needs the raw body stream intact. We create a
-        // Readable wrapper from the captured rawBody so the SDK can re-parse it.
+        // Use express raw body parser — keeps the parsed body on req.body
+        // AND preserves the original req as a proper IncomingMessage for the SDK.
+        // CloudAdapter.process() re-reads from req.body when it's already set.
+        app.use(express.json());
+        // POST /api/messages — route to correct adapter by activity.recipient.id.
+        // We pass the ORIGINAL req (not a proxy) to adapter.process() so the SDK
+        // has the full IncomingMessage (socket, connection, httpVersion, etc.)
+        // which it needs for the auth flow and response routing.
         app.post("/api/messages", async (req, res) => {
             try {
                 const activity = req.body;
@@ -405,20 +392,6 @@ export async function monitorA365Provider(opts) {
                 if (!recipientId) {
                     log.warn("inbound activity missing recipient.id, using first adapter");
                 }
-                // Create a proxy request that replays the raw body as a stream
-                // so CloudAdapter.process() can read it again.
-                const { Readable } = await import("node:stream");
-                const proxyReq = Object.assign(new Readable({
-                    read() {
-                        this.push(req.rawBody);
-                        this.push(null);
-                    },
-                }), {
-                    headers: req.headers,
-                    method: req.method,
-                    url: req.url,
-                    body: req.body,
-                });
                 // Resolve which adapter handles this activity
                 let targetAdapter = null;
                 let targetApp = null;
@@ -449,7 +422,9 @@ export async function monitorA365Provider(opts) {
                     return;
                 }
                 log.debug("routing activity to adapter", { recipientId, accountId: targetAccountId });
-                await targetAdapter.process(proxyReq, res, async (context) => targetApp.run(context));
+                // Pass the original req to adapter.process(). The SDK checks if
+                // req.body is already set and uses it directly (skips re-reading the stream).
+                await targetAdapter.process(req, res, async (context) => targetApp.run(context));
                 log.debug("activity processed successfully", { recipientId, accountId: targetAccountId });
             }
             catch (err) {
