@@ -450,21 +450,12 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         hasConnections_clientSecret: !!process.env["connections__serviceConnection__settings__clientSecret"],
       });
 
-      // Create AgentApplication
-      const storage = new MemoryStorage();
-      const agentApp = new AgentApplication<ApplicationTurnState>({ storage });
-
-      // Register message handler for this account
-      registerMessageHandler(agentApp, ActivityTypes, TurnContext, {
-        cfg,
-        a365Cfg,
-        runtime,
-        accountId,
-      });
-
       // Create a CloudAdapter with EXPLICIT auth config for this account.
       // We CANNOT rely on env vars because they're process-global and the
       // SDK reads them at request time, not at construction time.
+      // The adapter MUST be passed to AgentApplication via options.adapter,
+      // otherwise AgentApplication creates its own CloudAdapter() that reads
+      // from env vars (which contain the LAST account's credentials).
       const authConnections = new Map();
       authConnections.set("serviceConnection", {
         clientId: creds.appId,
@@ -476,6 +467,24 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         connections: authConnections,
         connectionsMap: [{ serviceUrl: "*", connection: "serviceConnection" }],
       }) as InstanceType<typeof CloudAdapter>;
+
+      log.info(`adapter created for ${accountId} with explicit authConfig`, {
+        appId: creds.appId,
+        tenantId: creds.tenantId,
+        hasPassword: !!creds.appPassword,
+      });
+
+      // Create AgentApplication with our pre-configured adapter
+      const storage = new MemoryStorage();
+      const agentApp = new AgentApplication<ApplicationTurnState>({ storage, adapter });
+
+      // Register message handler for this account
+      registerMessageHandler(agentApp, ActivityTypes, TurnContext, {
+        cfg,
+        a365Cfg,
+        runtime,
+        accountId,
+      });
 
       // Resolve blueprint client ID for this account
       const blueprintClientId =

@@ -1,6 +1,6 @@
 {
   "name": "@jemix/a365",
-  "version": "1.3.9",
+  "version": "1.4.0",
   "description": "OpenClaw A365 (Microsoft 365 Agents) channel plugin with Graph API tools",
   "type": "module",
   "scripts": {
