@@ -504,52 +504,80 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
     });
 
     // POST /api/messages — route to correct adapter by activity.recipient.id
-    // adapter.process() needs the raw body stream. We create a fresh readable
-    // stream from the captured rawBody so the adapter can re-read it.
-    app.post("/api/messages", (req: any, res: any) => {
-      const activity = req.body;
-      const recipientId = activity?.recipient?.id;
+    // CloudAdapter.process() needs the raw body stream intact. We create a
+    // Readable wrapper from the captured rawBody so the SDK can re-parse it.
+    app.post("/api/messages", async (req: any, res: any) => {
+      try {
+        const activity = req.body;
+        const recipientId = activity?.recipient?.id;
+        const activityType = activity?.type;
 
-      if (!recipientId) {
-        log.warn("inbound activity missing recipient.id, using first adapter");
-      }
+        log.info("inbound activity", { type: activityType, recipientId, from: activity?.from?.name || activity?.from?.id });
 
-      // Create a proxy request that replays the raw body as a stream
-      // so CloudAdapter.process() can read it again.
-      const { Readable } = require("node:stream");
-      const proxyReq = new Readable({
-        read() {
-          this.push(req.rawBody);
-          this.push(null);
-        },
-      });
-      // Copy headers and other properties the adapter needs
-      Object.assign(proxyReq, {
-        headers: req.headers,
-        method: req.method,
-        url: req.url,
-        body: req.body,
-      });
+        if (!recipientId) {
+          log.warn("inbound activity missing recipient.id, using first adapter");
+        }
 
-      const entry = recipientId ? getAdapterByRecipientId(recipientId) : null;
-      if (entry) {
-        const accountId = resolveAccountIdByRecipientId(recipientId);
-        log.debug("routing activity", { recipientId, accountId });
-        const match = agentApps.find((a) => a.accountId === accountId);
-        if (match) {
-          entry.adapter.process(proxyReq, res, async (context: any) => match.agentApp.run(context));
+        // Create a proxy request that replays the raw body as a stream
+        // so CloudAdapter.process() can read it again.
+        const { Readable } = await import("node:stream");
+        const proxyReq = Object.assign(
+          new Readable({
+            read() {
+              this.push(req.rawBody);
+              this.push(null);
+            },
+          }),
+          {
+            headers: req.headers,
+            method: req.method,
+            url: req.url,
+            body: req.body,
+          },
+        );
+
+        // Resolve which adapter handles this activity
+        let targetAdapter: any = null;
+        let targetApp: any = null;
+        let targetAccountId = "unknown";
+
+        const entry = recipientId ? getAdapterByRecipientId(recipientId) : null;
+        if (entry) {
+          const accountId = resolveAccountIdByRecipientId(recipientId);
+          const match = agentApps.find((a) => a.accountId === accountId);
+          if (match) {
+            targetAdapter = entry.adapter;
+            targetApp = match.agentApp;
+            targetAccountId = accountId ?? "unknown";
+          }
+        }
+
+        // Fallback to first adapter
+        if (!targetAdapter) {
+          const fallback = agentApps[0];
+          const fallbackEntry = getAdapterByRecipientId(fallback.appId);
+          if (fallbackEntry) {
+            targetAdapter = fallbackEntry.adapter;
+            targetApp = fallback.agentApp;
+            targetAccountId = fallback.accountId;
+          }
+        }
+
+        if (!targetAdapter || !targetApp) {
+          log.error("no adapter available for activity", { recipientId });
+          res.status(500).json({ error: "No adapter available" });
           return;
         }
-      }
 
-      // Fallback: use first adapter
-      const fallback = agentApps[0];
-      log.debug("routing activity to default adapter", { recipientId, accountId: fallback.accountId });
-      const fallbackEntry = getAdapterByRecipientId(fallback.appId);
-      if (fallbackEntry) {
-        fallbackEntry.adapter.process(proxyReq, res, async (context: any) => fallback.agentApp.run(context));
-      } else {
-        res.status(500).json({ error: "No adapter available" });
+        log.debug("routing activity to adapter", { recipientId, accountId: targetAccountId });
+        await targetAdapter.process(proxyReq, res, async (context: any) => targetApp.run(context));
+        log.debug("activity processed successfully", { recipientId, accountId: targetAccountId });
+      } catch (err) {
+        const detail = err instanceof Error ? err.stack || err.message : String(err);
+        log.error("POST /api/messages failed", { error: detail });
+        if (!res.headersSent) {
+          res.status(500).json({ error: "Internal server error" });
+        }
       }
     });
 
