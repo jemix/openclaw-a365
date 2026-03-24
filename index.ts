@@ -1,5 +1,4 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import { a365Plugin } from "./src/channel.js";
 import { setA365Runtime } from "./src/runtime.js";
 
@@ -18,15 +17,10 @@ export {
 export type { A365Config, A365AccountConfig, A365MessageMetadata, GraphCalendarEvent } from "./src/types.js";
 export { resolveAccountA365Config } from "./src/channel.js";
 
-const plugin = {
+export default defineChannelPluginEntry({
   id: "a365",
   name: "Microsoft 365 Agents",
   description: "A365 channel plugin with native Graph API tools for calendar and email",
-  configSchema: emptyPluginConfigSchema(),
-  register(api: OpenClawPluginApi) {
-    setA365Runtime(api.runtime);
-    api.registerChannel({ plugin: a365Plugin });
-  },
-};
-
-export default plugin;
+  plugin: a365Plugin,
+  setRuntime: setA365Runtime,
+});

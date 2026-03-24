@@ -1,4 +1,4 @@
-import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/core";
 import type { A365Config, A365MessageMetadata } from "./types.js";
 import { getA365Runtime } from "./runtime.js";
 import { runWithGraphToolContext } from "./graph-tools.js";
@@ -18,7 +18,7 @@ let a365ServerActive = false;
 
 export type MonitorA365Opts = {
   cfg: OpenClawConfig;
-  runtime?: RuntimeEnv;
+  runtime?: PluginRuntime;
   abortSignal?: AbortSignal;
 };
 
@@ -120,7 +120,7 @@ function registerMessageHandler(
   opts: {
     cfg: OpenClawConfig;
     a365Cfg: A365Config;
-    runtime: RuntimeEnv;
+    runtime: PluginRuntime;
     accountId: string;
   },
 ): void {
@@ -390,7 +390,7 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
     return { app: null, shutdown: async () => {} };
   }
 
-  const runtime: RuntimeEnv = opts.runtime ?? {
+  const runtime: PluginRuntime = opts.runtime ?? {
     log: console.log,
     error: console.error,
     exit: (code: number): never => {

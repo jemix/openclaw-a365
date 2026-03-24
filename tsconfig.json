@@ -11,6 +11,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["index.ts", "src/**/*.ts"],
+  "include": ["index.ts", "setup-entry.ts", "src/**/*.ts"],
   "exclude": ["src/**/*.test.ts", "node_modules"]
 }

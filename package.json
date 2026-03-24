@@ -1,6 +1,6 @@
 {
   "name": "@jemix/a365",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "OpenClaw A365 (Microsoft 365 Agents) channel plugin with Graph API tools",
   "type": "module",
   "scripts": {
@@ -20,11 +20,11 @@
   },
   "dependencies": {
     "@azure/msal-node": "^2.16.2",
-    "openclaw": "^2026.3.13",
+    "openclaw": "^2026.3.23",
     "@mariozechner/pi-agent-core": "0.52.9",
-    "@microsoft/agents-activity": "^1.1.0",
-    "@microsoft/agents-hosting": "^1.1.0",
-    "@microsoft/agents-hosting-express": "^1.1.0",
+    "@microsoft/agents-activity": "^1.4.1",
+    "@microsoft/agents-hosting": "^1.4.1",
+    "@microsoft/agents-hosting-express": "^1.4.1",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@sinclair/typebox": "0.34.48",
     "express": "^4.21.0"
@@ -32,6 +32,12 @@
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "setupEntry": "./dist/setup-entry.js",
+    "channel": {
+      "id": "a365",
+      "label": "Microsoft 365 Agents",
+      "blurb": "Connect OpenClaw to Microsoft 365 via the Agents SDK."
+    }
   }
 }
