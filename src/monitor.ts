@@ -441,6 +441,15 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
       // Set env vars for this account BEFORE creating the adapter
       setEnvForAccount(creds, port);
 
+      log.info(`env vars set for ${accountId}`, {
+        MicrosoftAppId: process.env.MicrosoftAppId,
+        MicrosoftAppType: process.env.MicrosoftAppType,
+        MicrosoftAppTenantId: process.env.MicrosoftAppTenantId,
+        hasMicrosoftAppPassword: !!process.env.MicrosoftAppPassword,
+        connections_clientId: process.env["connections__serviceConnection__settings__clientId"],
+        hasConnections_clientSecret: !!process.env["connections__serviceConnection__settings__clientSecret"],
+      });
+
       // Create AgentApplication
       const storage = new MemoryStorage();
       const agentApp = new AgentApplication<ApplicationTurnState>({ storage });
@@ -453,8 +462,20 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         accountId,
       });
 
-      // Extract adapter from the AgentApplication
-      const adapter = (agentApp.adapter ?? new CloudAdapter()) as InstanceType<typeof CloudAdapter>;
+      // Create a CloudAdapter with EXPLICIT auth config for this account.
+      // We CANNOT rely on env vars because they're process-global and the
+      // SDK reads them at request time, not at construction time.
+      const authConnections = new Map();
+      authConnections.set("serviceConnection", {
+        clientId: creds.appId,
+        clientSecret: creds.appPassword,
+        tenantId: creds.tenantId,
+        authority: `https://login.microsoftonline.com/${creds.tenantId}`,
+      });
+      const adapter = new CloudAdapter({
+        connections: authConnections,
+        connectionsMap: [{ serviceUrl: "*", connection: "serviceConnection" }],
+      }) as InstanceType<typeof CloudAdapter>;
 
       // Resolve blueprint client ID for this account
       const blueprintClientId =
