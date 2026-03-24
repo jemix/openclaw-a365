@@ -184,7 +184,7 @@ function registerMessageHandler(agentApp, ActivityTypes, TurnContext, opts) {
                 }
                 catch (sendErr) {
                     const err = sendErr;
-                    log.error("sendActivity failed", { error: err?.message });
+                    log.error("sendActivity failed", { error: err?.message, stack: err?.stack, name: err?.name });
                 }
             };
             const queuedCounts = { tool: 0, block: 0, final: 0 };
@@ -225,9 +225,8 @@ function registerMessageHandler(agentApp, ActivityTypes, TurnContext, opts) {
                     }
                     catch (typingErr) {
                         const err = typingErr;
-                        log.debug("typing indicator failed", {
-                            error: String(err),
-                            message: err?.message,
+                        log.warn("typing indicator failed (may indicate auth/adapter issue)", {
+                            error: err?.message,
                             stack: err?.stack,
                         });
                     }
@@ -262,8 +261,9 @@ function registerMessageHandler(agentApp, ActivityTypes, TurnContext, opts) {
                 }
             }
             catch (err) {
-                log.error("handler failed", { error: String(err) });
-                runtime.error?.(`a365 handler failed: ${String(err)}`);
+                const handlerErr = err;
+                log.error("handler failed", { error: handlerErr?.message, stack: handlerErr?.stack, name: handlerErr?.name });
+                runtime.error?.(`a365 handler failed: ${handlerErr?.stack || String(err)}`);
                 try {
                     await context.sendActivity("I encountered an error processing your message. Please try again.");
                 }

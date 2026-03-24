@@ -258,7 +258,7 @@ function registerMessageHandler(
               log.debug("reply sent successfully", { replyCount, resultId: result?.id });
             } catch (sendErr) {
               const err = sendErr as Error;
-              log.error("sendActivity failed", { error: err?.message });
+              log.error("sendActivity failed", { error: err?.message, stack: err?.stack, name: err?.name });
             }
           };
 
@@ -300,9 +300,8 @@ function registerMessageHandler(
                 log.debug("typing indicator sent");
               } catch (typingErr) {
                 const err = typingErr as Error;
-                log.debug("typing indicator failed", {
-                  error: String(err),
-                  message: err?.message,
+                log.warn("typing indicator failed (may indicate auth/adapter issue)", {
+                  error: err?.message,
                   stack: err?.stack,
                 });
               }
@@ -340,8 +339,9 @@ function registerMessageHandler(
               log.error(`Failed to update main session: ${String(updateErr)}`);
             }
           } catch (err) {
-            log.error("handler failed", { error: String(err) });
-            runtime.error?.(`a365 handler failed: ${String(err)}`);
+            const handlerErr = err as Error;
+            log.error("handler failed", { error: handlerErr?.message, stack: handlerErr?.stack, name: handlerErr?.name });
+            runtime.error?.(`a365 handler failed: ${handlerErr?.stack || String(err)}`);
 
             try {
               await context.sendActivity(
