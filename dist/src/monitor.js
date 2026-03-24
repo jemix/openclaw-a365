@@ -133,8 +133,23 @@ function registerMessageHandler(agentApp, ActivityTypes, TurnContext, opts) {
             currentUserAadId: metadata.userAadId,
             currentUserRole: userRole,
             sendActivity: async (activity) => {
-                const result = await context.sendActivity(activity);
-                return { id: result?.id };
+                try {
+                    log.info("sendActivity callback invoked", { type: typeof activity === "string" ? "text" : activity?.type, accountId });
+                    const result = await context.sendActivity(activity);
+                    log.info("sendActivity callback success", { resultId: result?.id });
+                    return { id: result?.id };
+                }
+                catch (err) {
+                    const e = err;
+                    log.error("sendActivity callback FAILED", {
+                        error: e?.message,
+                        stack: e?.stack,
+                        name: e?.name,
+                        accountId,
+                        activityType: typeof activity === "string" ? "text" : activity?.type,
+                    });
+                    throw err; // re-throw so runtime sees the failure
+                }
             },
         }, async () => {
             const senderId = metadata.userAadId || metadata.userId;
@@ -402,11 +417,40 @@ export async function monitorA365Provider(opts) {
         }
         // Start custom Express server for multi-adapter routing
         const { default: express } = await import("express");
+        const { authorizeJWT, getAuthConfigWithDefaults } = await import("@microsoft/agents-hosting");
         const app = express();
         // Use express raw body parser — keeps the parsed body on req.body
         // AND preserves the original req as a proper IncomingMessage for the SDK.
         // CloudAdapter.process() re-reads from req.body when it's already set.
         app.use(express.json());
+        // Build a COMBINED auth config with ALL account credentials so the
+        // JWT middleware can verify tokens from ANY registered bot.
+        // authorizeJWT matches the JWT audience against connections[].clientId.
+        const combinedConnections = new Map();
+        const combinedConnectionsMap = [];
+        for (const { accountId: aid, appId } of agentApps) {
+            const acctCfg2 = resolveAccountA365Config(a365Cfg, aid);
+            const creds2 = resolveA365Credentials(acctCfg2);
+            if (creds2) {
+                const connName = `svc-${aid}`;
+                combinedConnections.set(connName, {
+                    clientId: creds2.appId,
+                    clientSecret: creds2.appPassword,
+                    tenantId: creds2.tenantId,
+                    authority: `https://login.microsoftonline.com/${creds2.tenantId}`,
+                });
+                combinedConnectionsMap.push({ serviceUrl: "*", connection: connName });
+            }
+        }
+        const combinedAuthConfig = getAuthConfigWithDefaults({
+            connections: combinedConnections,
+            connectionsMap: combinedConnectionsMap,
+        });
+        log.info("JWT middleware configured", { accounts: agentApps.map(a => a.accountId) });
+        // authorizeJWT verifies the incoming JWT, resolves req.user with the token payload.
+        // Without this, req.user is undefined and CloudAdapter.process() creates an
+        // anonymous ConnectorClient that cannot send responses.
+        app.use(authorizeJWT(combinedAuthConfig));
         // POST /api/messages — route to correct adapter by activity.recipient.id.
         // We pass the ORIGINAL req (not a proxy) to adapter.process() so the SDK
         // has the full IncomingMessage (socket, connection, httpVersion, etc.)
