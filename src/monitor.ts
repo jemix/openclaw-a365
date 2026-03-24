@@ -6,6 +6,7 @@ import { resolveA365Credentials } from "./token.js";
 import { saveConversationReference } from "./conversation-store.js";
 import {
   registerAdapter,
+  registerRecipientId,
   resolveAccountIdByRecipientId,
   getAdapterByRecipientId,
   setAdapter,
@@ -597,6 +598,24 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
           }
         }
 
+        // Try matching by appId prefix (Teams sends "28:<appId>" as recipient.id)
+        if (!targetAdapter && recipientId) {
+          for (const candidate of agentApps) {
+            if (recipientId.includes(candidate.appId)) {
+              const candidateEntry = getAdapterByRecipientId(candidate.appId);
+              if (candidateEntry) {
+                targetAdapter = candidateEntry.adapter;
+                targetApp = candidate.agentApp;
+                targetAccountId = candidate.accountId;
+                // Register this recipientId for future fast lookups
+                registerRecipientId(recipientId, candidate.accountId);
+                log.info(`registered new recipientId mapping: ${recipientId} → ${candidate.accountId}`);
+                break;
+              }
+            }
+          }
+        }
+
         // Fallback to first adapter
         if (!targetAdapter) {
           const fallback = agentApps[0];
@@ -605,6 +624,11 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
             targetAdapter = fallbackEntry.adapter;
             targetApp = fallback.agentApp;
             targetAccountId = fallback.accountId;
+            // Register fallback mapping too
+            if (recipientId) {
+              registerRecipientId(recipientId, fallback.accountId);
+              log.info(`registered fallback recipientId mapping: ${recipientId} → ${fallback.accountId}`);
+            }
           }
         }
 
