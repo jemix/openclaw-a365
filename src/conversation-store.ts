@@ -8,6 +8,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { buildA365NamespacedPeerId, normalizeA365AccountId } from "./account-scope.js";
 
 /**
  * SDK ConversationReference shape (from @microsoft/agents-activity).
@@ -28,6 +29,7 @@ type ConversationStoreEntry = {
   updatedAt: number;
   userAadId?: string;
   accountId?: string;
+  peerId?: string;
 };
 
 type ConversationStore = {
@@ -38,6 +40,19 @@ const STORE_DIR = join(homedir(), ".openclaw");
 const STORE_PATH = join(STORE_DIR, "a365-conversations.json");
 
 let storeCache: ConversationStore | null = null;
+
+function resolveStoreKey(targetId: string, accountId?: string): string {
+  return accountId ? buildA365NamespacedPeerId(accountId, targetId) : targetId;
+}
+
+function resolveEntry(
+  store: ConversationStore,
+  targetId: string,
+  accountId?: string,
+): ConversationStoreEntry | undefined {
+  const scopedKey = resolveStoreKey(targetId, accountId);
+  return store.references[scopedKey] ?? store.references[targetId];
+}
 
 async function loadStore(): Promise<ConversationStore> {
   if (storeCache) return storeCache;
@@ -62,12 +77,23 @@ async function saveStore(store: ConversationStore): Promise<void> {
  */
 export async function saveConversationReference(
   ref: StoredConversationReference,
-  userAadId?: string,
-  accountId?: string,
+  options?: {
+    userAadId?: string;
+    accountId?: string;
+    peerId?: string;
+  },
 ): Promise<void> {
   const store = await loadStore();
-  const key = ref.conversation.id;
-  store.references[key] = { ref, updatedAt: Date.now(), userAadId, accountId };
+  const normalizedAccountId = options?.accountId ? normalizeA365AccountId(options.accountId) : undefined;
+  const peerId = options?.peerId?.trim() || ref.conversation.id;
+  const key = resolveStoreKey(peerId, normalizedAccountId);
+  store.references[key] = {
+    ref,
+    updatedAt: Date.now(),
+    userAadId: options?.userAadId,
+    accountId: normalizedAccountId,
+    peerId,
+  };
   await saveStore(store);
 }
 
@@ -76,9 +102,10 @@ export async function saveConversationReference(
  */
 export async function getConversationReference(
   conversationId: string,
+  accountId?: string,
 ): Promise<StoredConversationReference | undefined> {
   const store = await loadStore();
-  return store.references[conversationId]?.ref;
+  return resolveEntry(store, conversationId, accountId)?.ref;
 }
 
 /**
@@ -86,10 +113,13 @@ export async function getConversationReference(
  */
 export async function getConversationReferenceByUser(
   userAadId: string,
+  accountId?: string,
 ): Promise<StoredConversationReference | undefined> {
   const store = await loadStore();
   let best: { ref: StoredConversationReference; updatedAt: number } | undefined;
+  const normalizedAccountId = accountId ? normalizeA365AccountId(accountId) : undefined;
   for (const entry of Object.values(store.references)) {
+    if (normalizedAccountId && entry.accountId !== normalizedAccountId) continue;
     if (entry.userAadId === userAadId && (!best || entry.updatedAt > best.updatedAt)) {
       best = entry;
     }
@@ -102,9 +132,10 @@ export async function getConversationReferenceByUser(
  */
 export async function getAccountIdForConversation(
   conversationId: string,
+  accountId?: string,
 ): Promise<string | undefined> {
   const store = await loadStore();
-  return store.references[conversationId]?.accountId;
+  return resolveEntry(store, conversationId, accountId)?.accountId;
 }
 
 /**
@@ -112,9 +143,10 @@ export async function getAccountIdForConversation(
  */
 export async function getConversationEntry(
   conversationId: string,
+  accountId?: string,
 ): Promise<ConversationStoreEntry | undefined> {
   const store = await loadStore();
-  return store.references[conversationId];
+  return resolveEntry(store, conversationId, accountId);
 }
 
 /**
@@ -122,10 +154,13 @@ export async function getConversationEntry(
  */
 export async function getConversationEntryByUser(
   userAadId: string,
+  accountId?: string,
 ): Promise<ConversationStoreEntry | undefined> {
   const store = await loadStore();
   let best: ConversationStoreEntry | undefined;
+  const normalizedAccountId = accountId ? normalizeA365AccountId(accountId) : undefined;
   for (const entry of Object.values(store.references)) {
+    if (normalizedAccountId && entry.accountId !== normalizedAccountId) continue;
     if (entry.userAadId === userAadId && (!best || entry.updatedAt > best.updatedAt)) {
       best = entry;
     }

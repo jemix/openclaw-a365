@@ -1,6 +1,7 @@
 import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/core";
 import type { A365Config, A365MessageMetadata } from "./types.js";
 import { getA365Runtime } from "./runtime.js";
+import { buildA365NamespacedPeerId, normalizeA365AccountId } from "./account-scope.js";
 import { runWithGraphToolContext } from "./graph-tools.js";
 import { resolveA365Credentials } from "./token.js";
 import { saveConversationReference } from "./conversation-store.js";
@@ -128,6 +129,7 @@ function registerMessageHandler(
   const core = getA365Runtime();
   const log = core.logging.getChildLogger({ name: `a365:${opts.accountId}` });
   const { cfg, a365Cfg, runtime, accountId } = opts;
+  const inboundAccountId = normalizeA365AccountId(accountId);
 
   // Resolve per-account config
   const acctCfg = resolveAccountA365Config(a365Cfg, accountId) ?? a365Cfg;
@@ -167,9 +169,13 @@ function registerMessageHandler(
           conversationId: convRef.conversation?.id,
           serviceUrl: convRef.serviceUrl,
           agentRole: convRef.agent?.role,
-          accountId,
+          accountId: inboundAccountId,
         });
-        await saveConversationReference(convRef, metadata.userAadId, accountId);
+        await saveConversationReference(convRef, {
+          userAadId: metadata.userAadId,
+          accountId: inboundAccountId,
+          peerId: metadata.isGroup ? metadata.conversationId : metadata.userAadId || metadata.userId,
+        });
         log.info("Conversation reference saved successfully");
       } catch (err) {
         log.error(`Failed to save conversation reference: ${String(err)}`);
@@ -225,13 +231,16 @@ function registerMessageHandler(
           const senderId = metadata.userAadId || metadata.userId;
           const conversationId = metadata.conversationId;
           const isDirectMessage = !metadata.isGroup;
+          const peerId = isDirectMessage ? senderId : conversationId;
+          const namespacedPeerId = buildA365NamespacedPeerId(inboundAccountId, peerId);
 
           const route = core.channel.routing.resolveAgentRoute({
             cfg,
             channel: "a365",
+            accountId: inboundAccountId,
             peer: {
               kind: isDirectMessage ? "direct" : "group",
-              id: isDirectMessage ? senderId : conversationId,
+              id: namespacedPeerId,
             },
           });
 
@@ -247,7 +256,7 @@ function registerMessageHandler(
             From: a365From,
             To: a365To,
             SessionKey: route.sessionKey,
-            AccountId: route.accountId,
+            AccountId: inboundAccountId,
             ChatType: isDirectMessage ? "direct" : "group",
             ConversationLabel: metadata.userName || senderId,
             SenderName: metadata.userName || senderId,
@@ -259,6 +268,7 @@ function registerMessageHandler(
             WasMentioned: true,
             CommandAuthorized: isOwner,
             OriginatingChannel: "a365" as const,
+            OriginatingAccountId: inboundAccountId,
             OriginatingTo: conversationId,
           });
 
@@ -347,9 +357,10 @@ function registerMessageHandler(
                 storePath,
                 sessionKey: mainSessionKey,
                 channel: "a365",
-                to: conversationId,
+                to: a365To,
+                accountId: inboundAccountId,
               });
-              log.info("Updated main session for cron delivery", { conversationId });
+              log.info("Updated main session for cron delivery", { conversationId, accountId: inboundAccountId, to: a365To });
             } catch (updateErr) {
               log.error(`Failed to update main session: ${String(updateErr)}`);
             }

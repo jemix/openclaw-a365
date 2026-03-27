@@ -1,32 +1,33 @@
 import { getA365Runtime } from "./runtime.js";
+import { normalizeA365AccountId } from "./account-scope.js";
 import { getAdapter, getBlueprintClientId, getAdapterForAccount, getAdapterByRecipientId, } from "./adapter-store.js";
-import { getConversationReference, getConversationReferenceByUser, getAccountIdForConversation, getConversationEntryByUser, } from "./conversation-store.js";
+import { getConversationEntry, getConversationEntryByUser, } from "./conversation-store.js";
 /**
  * Resolve a stored conversation reference from the provided params.
  * Tries conversationId lookup first, then falls back to userAadId lookup.
  * Returns the reference and its associated accountId (if stored).
  */
-async function resolveStoredReference(to, metadata) {
+async function resolveStoredReference(to, metadata, accountId) {
     const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
     const conversationId = to || metadata?.conversationId;
     if (!conversationId)
         return undefined;
+    const normalizedAccountId = accountId ? normalizeA365AccountId(accountId) : undefined;
     log.info(`Looking up stored conversation reference for: ${conversationId}`);
-    let ref = await getConversationReference(conversationId);
-    let accountId = ref ? await getAccountIdForConversation(conversationId) : undefined;
+    let entry = await getConversationEntry(conversationId, normalizedAccountId);
+    let ref = entry?.ref;
+    let resolvedAccountId = entry?.accountId ?? normalizedAccountId;
     // If direct lookup fails and it looks like a userAadId (UUID without colons/@),
     // try looking up by userAadId as a fallback
     if (!ref && !conversationId.includes(":") && !conversationId.includes("@")) {
         log.info(`Direct lookup failed, trying userAadId lookup for ${conversationId}`);
-        ref = await getConversationReferenceByUser(conversationId);
-        if (ref) {
-            const entry = await getConversationEntryByUser(conversationId);
-            accountId = entry?.accountId;
-        }
+        entry = await getConversationEntryByUser(conversationId, normalizedAccountId);
+        ref = entry?.ref;
+        resolvedAccountId = entry?.accountId ?? normalizedAccountId;
     }
     if (ref) {
-        log.info(`Found stored reference: conversationId=${ref.conversation?.id}, accountId=${accountId ?? "default"}`);
-        return { ref, accountId };
+        log.info(`Found stored reference: conversationId=${ref.conversation?.id}, accountId=${resolvedAccountId ?? "default"}`);
+        return { ref, accountId: resolvedAccountId };
     }
     log.warn(`No stored reference found for: ${conversationId}`);
     return undefined;
@@ -99,10 +100,10 @@ async function sendViaAdapter(params) {
  * Send a message to a conversation using the SDK's proactive messaging.
  */
 export async function sendMessageA365(params) {
-    const { to, text, metadata } = params;
+    const { to, text, metadata, accountId } = params;
     const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
     log.info(`sendMessageA365 called: to=${to} hasMetadata=${!!metadata}`);
-    const resolved = await resolveStoredReference(to, metadata);
+    const resolved = await resolveStoredReference(to, metadata, accountId);
     if (!resolved) {
         return { ok: false, error: "No stored conversation reference. User must message the bot first." };
     }
@@ -132,9 +133,9 @@ export async function sendMessageA365(params) {
  * Send an Adaptive Card to a conversation using the SDK's proactive messaging.
  */
 export async function sendAdaptiveCardA365(params) {
-    const { to, card, metadata } = params;
+    const { to, card, metadata, accountId } = params;
     const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
-    const resolved = await resolveStoredReference(to, metadata);
+    const resolved = await resolveStoredReference(to, metadata, accountId);
     if (!resolved) {
         return { ok: false, error: "No stored conversation reference. User must message the bot first." };
     }
@@ -214,19 +215,19 @@ export const a365Outbound = {
             error: new Error("No A365 conversation target specified. User must message the bot first."),
         };
     },
-    sendText: async ({ cfg, to, text }) => {
+    sendText: async ({ cfg, to, text, accountId }) => {
         const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
         log.info("sendText called", { to, textLength: text?.length ?? 0 });
-        const result = await sendMessageA365({ cfg, to, text });
+        const result = await sendMessageA365({ cfg, to, text, accountId });
         return {
             channel: "a365",
             messageId: result.messageId ?? "",
             conversationId: result.conversationId,
         };
     },
-    sendMedia: async ({ cfg, to, text, mediaUrl }) => {
+    sendMedia: async ({ cfg, to, text, mediaUrl, accountId }) => {
         const messageText = mediaUrl ? `${text}\n\n${mediaUrl}` : text;
-        const result = await sendMessageA365({ cfg, to, text: messageText });
+        const result = await sendMessageA365({ cfg, to, text: messageText, accountId });
         return {
             channel: "a365",
             messageId: result.messageId ?? "",

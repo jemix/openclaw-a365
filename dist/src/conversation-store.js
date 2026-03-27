@@ -8,9 +8,17 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { buildA365NamespacedPeerId, normalizeA365AccountId } from "./account-scope.js";
 const STORE_DIR = join(homedir(), ".openclaw");
 const STORE_PATH = join(STORE_DIR, "a365-conversations.json");
 let storeCache = null;
+function resolveStoreKey(targetId, accountId) {
+    return accountId ? buildA365NamespacedPeerId(accountId, targetId) : targetId;
+}
+function resolveEntry(store, targetId, accountId) {
+    const scopedKey = resolveStoreKey(targetId, accountId);
+    return store.references[scopedKey] ?? store.references[targetId];
+}
 async function loadStore() {
     if (storeCache)
         return storeCache;
@@ -32,26 +40,37 @@ async function saveStore(store) {
 /**
  * Save a conversation reference for proactive messaging.
  */
-export async function saveConversationReference(ref, userAadId, accountId) {
+export async function saveConversationReference(ref, options) {
     const store = await loadStore();
-    const key = ref.conversation.id;
-    store.references[key] = { ref, updatedAt: Date.now(), userAadId, accountId };
+    const normalizedAccountId = options?.accountId ? normalizeA365AccountId(options.accountId) : undefined;
+    const peerId = options?.peerId?.trim() || ref.conversation.id;
+    const key = resolveStoreKey(peerId, normalizedAccountId);
+    store.references[key] = {
+        ref,
+        updatedAt: Date.now(),
+        userAadId: options?.userAadId,
+        accountId: normalizedAccountId,
+        peerId,
+    };
     await saveStore(store);
 }
 /**
  * Get a stored conversation reference by conversation ID.
  */
-export async function getConversationReference(conversationId) {
+export async function getConversationReference(conversationId, accountId) {
     const store = await loadStore();
-    return store.references[conversationId]?.ref;
+    return resolveEntry(store, conversationId, accountId)?.ref;
 }
 /**
  * Get a stored conversation reference by user AAD ID.
  */
-export async function getConversationReferenceByUser(userAadId) {
+export async function getConversationReferenceByUser(userAadId, accountId) {
     const store = await loadStore();
     let best;
+    const normalizedAccountId = accountId ? normalizeA365AccountId(accountId) : undefined;
     for (const entry of Object.values(store.references)) {
+        if (normalizedAccountId && entry.accountId !== normalizedAccountId)
+            continue;
         if (entry.userAadId === userAadId && (!best || entry.updatedAt > best.updatedAt)) {
             best = entry;
         }
@@ -61,24 +80,27 @@ export async function getConversationReferenceByUser(userAadId) {
 /**
  * Get the accountId associated with a conversation.
  */
-export async function getAccountIdForConversation(conversationId) {
+export async function getAccountIdForConversation(conversationId, accountId) {
     const store = await loadStore();
-    return store.references[conversationId]?.accountId;
+    return resolveEntry(store, conversationId, accountId)?.accountId;
 }
 /**
  * Get the full store entry for a conversation (includes accountId, userAadId, etc.).
  */
-export async function getConversationEntry(conversationId) {
+export async function getConversationEntry(conversationId, accountId) {
     const store = await loadStore();
-    return store.references[conversationId];
+    return resolveEntry(store, conversationId, accountId);
 }
 /**
  * Get the full store entry by user AAD ID (most recent conversation).
  */
-export async function getConversationEntryByUser(userAadId) {
+export async function getConversationEntryByUser(userAadId, accountId) {
     const store = await loadStore();
     let best;
+    const normalizedAccountId = accountId ? normalizeA365AccountId(accountId) : undefined;
     for (const entry of Object.values(store.references)) {
+        if (normalizedAccountId && entry.accountId !== normalizedAccountId)
+            continue;
         if (entry.userAadId === userAadId && (!best || entry.updatedAt > best.updatedAt)) {
             best = entry;
         }
