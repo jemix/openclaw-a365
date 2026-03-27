@@ -19,6 +19,10 @@ export type A365AccountConfig = {
     blueprintClientSecret?: string;
     /** AA Instance ID (Agent Application Instance ID) - required for user_fic flow */
     aaInstanceId?: string;
+    /** Agentic User ID (Entra User Object ID of the agent) - used for recipient.id routing.
+     *  Teams sends "8:orgid:<agenticUserId>" as recipient.id for M365 Agents.
+     *  If not set, falls back to aaInstanceId for matching. */
+    agenticUserId?: string;
     /** OAuth scope for Graph API */
     scope?: string;
     /** @deprecated Use blueprintClientAppId instead */

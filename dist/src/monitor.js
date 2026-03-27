@@ -2,7 +2,7 @@ import { getA365Runtime } from "./runtime.js";
 import { runWithGraphToolContext } from "./graph-tools.js";
 import { resolveA365Credentials } from "./token.js";
 import { saveConversationReference } from "./conversation-store.js";
-import { registerAdapter, resolveAccountIdByRecipientId, getAdapterByRecipientId, setAdapter, setBlueprintClientId, } from "./adapter-store.js";
+import { registerAdapter, registerRecipientId, resolveAccountIdByRecipientId, getAdapterByRecipientId, setAdapter, setBlueprintClientId, } from "./adapter-store.js";
 import { resolveAccountA365Config } from "./channel.js";
 /** Guard against double-start: tracks whether the a365 server is already listening. */
 let a365ServerActive = false;
@@ -407,7 +407,7 @@ export async function monitorA365Provider(opts) {
                 blueprintClientId,
                 agentApp,
             });
-            agentApps.push({ accountId, agentApp, appId: creds.appId });
+            agentApps.push({ accountId, agentApp, appId: creds.appId, aaInstanceId: acctCfg?.graph?.aaInstanceId, agenticUserId: acctCfg?.graph?.agenticUserId });
             log.info(`adapter registered for account: ${accountId} (blueprintClientId: ${blueprintClientId})`);
         }
         if (agentApps.length === 0) {
@@ -478,6 +478,30 @@ export async function monitorA365Provider(opts) {
                         targetAccountId = accountId ?? "unknown";
                     }
                 }
+                // Try matching by appId, aaInstanceId, or agenticUserId in recipient.id
+                // Teams sends recipient.id in various formats:
+                //   "28:<appId>" for classic bots
+                //   "8:orgid:<agenticUserId>" for M365 Agents
+                // agenticUserId (Entra User Object ID) differs from aaInstanceId (ServiceIdentity SP ID)
+                if (!targetAdapter && recipientId) {
+                    for (const candidate of agentApps) {
+                        const matchesAppId = recipientId.includes(candidate.appId);
+                        const matchesAaInstance = candidate.aaInstanceId && recipientId.includes(candidate.aaInstanceId);
+                        const matchesAgenticUser = candidate.agenticUserId && recipientId.includes(candidate.agenticUserId);
+                        if (matchesAppId || matchesAaInstance || matchesAgenticUser) {
+                            const candidateEntry = getAdapterByRecipientId(candidate.appId);
+                            if (candidateEntry) {
+                                targetAdapter = candidateEntry.adapter;
+                                targetApp = candidate.agentApp;
+                                targetAccountId = candidate.accountId;
+                                // Register this recipientId for future fast lookups
+                                registerRecipientId(recipientId, candidate.accountId);
+                                log.info(`registered new recipientId mapping: ${recipientId} → ${candidate.accountId}`);
+                                break;
+                            }
+                        }
+                    }
+                }
                 // Fallback to first adapter
                 if (!targetAdapter) {
                     const fallback = agentApps[0];
@@ -486,6 +510,11 @@ export async function monitorA365Provider(opts) {
                         targetAdapter = fallbackEntry.adapter;
                         targetApp = fallback.agentApp;
                         targetAccountId = fallback.accountId;
+                        // Register fallback mapping too
+                        if (recipientId) {
+                            registerRecipientId(recipientId, fallback.accountId);
+                            log.info(`registered fallback recipientId mapping: ${recipientId} → ${fallback.accountId}`);
+                        }
                     }
                 }
                 if (!targetAdapter || !targetApp) {

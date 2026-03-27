@@ -435,7 +435,7 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
     // --- Multi-account mode ---
     log.info(`starting a365 provider in multi-account mode (${Object.keys(accounts).length} accounts, port ${port})`);
 
-    const agentApps: Array<{ accountId: string; agentApp: InstanceType<typeof AgentApplication>; appId: string }> = [];
+    const agentApps: Array<{ accountId: string; agentApp: InstanceType<typeof AgentApplication>; appId: string; aaInstanceId?: string; agenticUserId?: string }> = [];
 
     // Create adapters SEQUENTIALLY (env vars are process-global, SDK caches at creation time)
     for (const [accountId, acctConfig] of Object.entries(accounts)) {
@@ -516,7 +516,7 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
         agentApp,
       });
 
-      agentApps.push({ accountId, agentApp, appId: creds.appId });
+      agentApps.push({ accountId, agentApp, appId: creds.appId, aaInstanceId: acctCfg?.graph?.aaInstanceId, agenticUserId: acctCfg?.graph?.agenticUserId });
       log.info(`adapter registered for account: ${accountId} (blueprintClientId: ${blueprintClientId})`);
     }
 
@@ -598,10 +598,17 @@ export async function monitorA365Provider(opts: MonitorA365Opts): Promise<Monito
           }
         }
 
-        // Try matching by appId prefix (Teams sends "28:<appId>" as recipient.id)
+        // Try matching by appId, aaInstanceId, or agenticUserId in recipient.id
+        // Teams sends recipient.id in various formats:
+        //   "28:<appId>" for classic bots
+        //   "8:orgid:<agenticUserId>" for M365 Agents
+        // agenticUserId (Entra User Object ID) differs from aaInstanceId (ServiceIdentity SP ID)
         if (!targetAdapter && recipientId) {
           for (const candidate of agentApps) {
-            if (recipientId.includes(candidate.appId)) {
+            const matchesAppId = recipientId.includes(candidate.appId);
+            const matchesAaInstance = candidate.aaInstanceId && recipientId.includes(candidate.aaInstanceId);
+            const matchesAgenticUser = candidate.agenticUserId && recipientId.includes(candidate.agenticUserId);
+            if (matchesAppId || matchesAaInstance || matchesAgenticUser) {
               const candidateEntry = getAdapterByRecipientId(candidate.appId);
               if (candidateEntry) {
                 targetAdapter = candidateEntry.adapter;
