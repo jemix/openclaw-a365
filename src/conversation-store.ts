@@ -8,7 +8,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { buildA365NamespacedPeerId, normalizeA365AccountId } from "./account-scope.js";
+import { buildA365LookupKeys, buildA365NamespacedPeerId, normalizeA365AccountId } from "./account-scope.js";
 
 /**
  * SDK ConversationReference shape (from @microsoft/agents-activity).
@@ -50,8 +50,13 @@ function resolveEntry(
   targetId: string,
   accountId?: string,
 ): ConversationStoreEntry | undefined {
-  const scopedKey = resolveStoreKey(targetId, accountId);
-  return store.references[scopedKey] ?? store.references[targetId];
+  for (const key of buildA365LookupKeys(targetId, accountId)) {
+    const entry = store.references[key];
+    if (entry) {
+      return entry;
+    }
+  }
+  return undefined;
 }
 
 async function loadStore(): Promise<ConversationStore> {
@@ -172,7 +177,7 @@ export async function getConversationEntryByUser(
  * List all stored conversation references.
  */
 export async function listConversationReferences(): Promise<
-  Array<{ conversationId: string; updatedAt: number; userAadId?: string; accountId?: string }>
+  Array<{ conversationId: string; updatedAt: number; userAadId?: string; accountId?: string; peerId?: string }>
 > {
   const store = await loadStore();
   return Object.entries(store.references).map(([id, entry]) => ({
@@ -180,15 +185,18 @@ export async function listConversationReferences(): Promise<
     updatedAt: entry.updatedAt,
     userAadId: entry.userAadId,
     accountId: entry.accountId,
+    peerId: entry.peerId,
   }));
 }
 
 /**
  * Delete a stored conversation reference.
  */
-export async function deleteConversationReference(conversationId: string): Promise<void> {
+export async function deleteConversationReference(conversationId: string, accountId?: string): Promise<void> {
   const store = await loadStore();
-  delete store.references[conversationId];
+  for (const key of buildA365LookupKeys(conversationId, accountId)) {
+    delete store.references[key];
+  }
   await saveStore(store);
 }
 

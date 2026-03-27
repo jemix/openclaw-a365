@@ -1,7 +1,6 @@
 type ChannelOutboundAdapter = any;
 import type { A365Config, A365MessageMetadata } from "./types.js";
 import { getA365Runtime } from "./runtime.js";
-import { normalizeA365AccountId } from "./account-scope.js";
 import {
   getAdapter,
   getBlueprintClientId,
@@ -9,7 +8,9 @@ import {
   getAdapterByRecipientId,
 } from "./adapter-store.js";
 import {
-  getConversationEntry,
+  getConversationReference,
+  getConversationReferenceByUser,
+  getAccountIdForConversation,
   getConversationEntryByUser,
   type StoredConversationReference,
 } from "./conversation-store.js";
@@ -27,31 +28,38 @@ type ResolvedReference = {
 async function resolveStoredReference(
   to: string | undefined,
   metadata: A365MessageMetadata | undefined,
-  accountId?: string,
+  explicitAccountId?: string,
 ): Promise<ResolvedReference | undefined> {
   const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
 
   const conversationId = to || metadata?.conversationId;
   if (!conversationId) return undefined;
-  const normalizedAccountId = accountId ? normalizeA365AccountId(accountId) : undefined;
+  const preferredAccountId = explicitAccountId || metadata?.accountId;
 
-  log.info(`Looking up stored conversation reference for: ${conversationId}`);
-  let entry = await getConversationEntry(conversationId, normalizedAccountId);
-  let ref = entry?.ref;
-  let resolvedAccountId = entry?.accountId ?? normalizedAccountId;
+  log.info(`Looking up stored conversation reference for: ${conversationId}`, {
+    accountId: preferredAccountId,
+  });
+  let ref = await getConversationReference(conversationId, preferredAccountId);
+  let accountId = ref
+    ? await getAccountIdForConversation(conversationId, preferredAccountId)
+    : preferredAccountId;
 
   // If direct lookup fails and it looks like a userAadId (UUID without colons/@),
   // try looking up by userAadId as a fallback
   if (!ref && !conversationId.includes(":") && !conversationId.includes("@")) {
-    log.info(`Direct lookup failed, trying userAadId lookup for ${conversationId}`);
-    entry = await getConversationEntryByUser(conversationId, normalizedAccountId);
-    ref = entry?.ref;
-    resolvedAccountId = entry?.accountId ?? normalizedAccountId;
+    log.info(`Direct lookup failed, trying userAadId lookup for ${conversationId}`, {
+      accountId: preferredAccountId,
+    });
+    ref = await getConversationReferenceByUser(conversationId, preferredAccountId);
+    if (ref) {
+      const entry = await getConversationEntryByUser(conversationId, preferredAccountId);
+      accountId = entry?.accountId;
+    }
   }
 
   if (ref) {
-    log.info(`Found stored reference: conversationId=${ref.conversation?.id}, accountId=${resolvedAccountId ?? "default"}`);
-    return { ref, accountId: resolvedAccountId };
+    log.info(`Found stored reference: conversationId=${ref.conversation?.id}, accountId=${accountId ?? "default"}`);
+    return { ref, accountId };
   }
 
   log.warn(`No stored reference found for: ${conversationId}`);
@@ -151,7 +159,7 @@ export async function sendMessageA365(params: {
   const { to, text, metadata, accountId } = params;
   const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
 
-  log.info(`sendMessageA365 called: to=${to} hasMetadata=${!!metadata}`);
+  log.info(`sendMessageA365 called: to=${to} hasMetadata=${!!metadata}`, { accountId });
 
   const resolved = await resolveStoredReference(to, metadata, accountId);
   if (!resolved) {
@@ -286,7 +294,7 @@ export const a365Outbound: ChannelOutboundAdapter = {
 
   sendText: async ({ cfg, to, text, accountId }) => {
     const log = getA365Runtime().logging.getChildLogger({ name: "a365-outbound" });
-    log.info("sendText called", { to, textLength: text?.length ?? 0 });
+    log.info("sendText called", { to, textLength: text?.length ?? 0, accountId });
 
     const result = await sendMessageA365({ cfg, to, text, accountId });
     return {
@@ -297,7 +305,9 @@ export const a365Outbound: ChannelOutboundAdapter = {
   },
 
   sendMedia: async ({ cfg, to, text, mediaUrl, accountId }) => {
-    const messageText = mediaUrl ? `${text}\n\n${mediaUrl}` : text;
+    const messageText = mediaUrl ? `${text}
+
+${mediaUrl}` : text;
     const result = await sendMessageA365({ cfg, to, text: messageText, accountId });
     return {
       channel: "a365" as const,

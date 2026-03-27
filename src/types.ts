@@ -176,6 +176,7 @@ export type A365MessageMetadata = {
   userEmail?: string;
   userName?: string;
   userAadId?: string;
+  accountId?: string;
   conversationId: string;
   isGroup: boolean;
   tenantId?: string;

@@ -8,7 +8,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { buildA365NamespacedPeerId, normalizeA365AccountId } from "./account-scope.js";
+import { buildA365LookupKeys, buildA365NamespacedPeerId, normalizeA365AccountId } from "./account-scope.js";
 const STORE_DIR = join(homedir(), ".openclaw");
 const STORE_PATH = join(STORE_DIR, "a365-conversations.json");
 let storeCache = null;
@@ -16,8 +16,13 @@ function resolveStoreKey(targetId, accountId) {
     return accountId ? buildA365NamespacedPeerId(accountId, targetId) : targetId;
 }
 function resolveEntry(store, targetId, accountId) {
-    const scopedKey = resolveStoreKey(targetId, accountId);
-    return store.references[scopedKey] ?? store.references[targetId];
+    for (const key of buildA365LookupKeys(targetId, accountId)) {
+        const entry = store.references[key];
+        if (entry) {
+            return entry;
+        }
+    }
+    return undefined;
 }
 async function loadStore() {
     if (storeCache)
@@ -117,14 +122,17 @@ export async function listConversationReferences() {
         updatedAt: entry.updatedAt,
         userAadId: entry.userAadId,
         accountId: entry.accountId,
+        peerId: entry.peerId,
     }));
 }
 /**
  * Delete a stored conversation reference.
  */
-export async function deleteConversationReference(conversationId) {
+export async function deleteConversationReference(conversationId, accountId) {
     const store = await loadStore();
-    delete store.references[conversationId];
+    for (const key of buildA365LookupKeys(conversationId, accountId)) {
+        delete store.references[key];
+    }
     await saveStore(store);
 }
 /**

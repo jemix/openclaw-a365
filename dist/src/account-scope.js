@@ -9,3 +9,15 @@ export function buildA365NamespacedPeerId(accountId, peerId) {
         return normalizeA365AccountId(accountId);
     return `${normalizeA365AccountId(accountId)}:${normalizedPeerId}`;
 }
+export function buildA365LookupKeys(peerId, accountId) {
+    const normalizedPeerId = peerId.trim();
+    if (!normalizedPeerId)
+        return [];
+    const normalizedAccountId = accountId ? normalizeA365AccountId(accountId) : undefined;
+    const keys = new Set();
+    keys.add(normalizedPeerId);
+    if (normalizedAccountId) {
+        keys.add(buildA365NamespacedPeerId(normalizedAccountId, normalizedPeerId));
+    }
+    return [...keys];
+}
